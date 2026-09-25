@@ -1,0 +1,1 @@
+PASS: verifier role defaults exposed; inventory user overrides default; no host tasks executed

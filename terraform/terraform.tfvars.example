@@ -1,7 +1,10 @@
-region                    = "KR"
-site                      = "public"
-name                      = "openclaw"
-subnet_no                 = "REPLACE_ME"
-server_image_product_code = "REPLACE_ME"
-server_product_code       = "REPLACE_ME"
-login_key_name            = "REPLACE_ME"
+region = "KR"
+site = "public"
+name = "openclaw"
+subnet_no = "REPLACE_ME"
+login_key_name = "REPLACE_ME"
+hypervisor = "KVM"
+server_image_number = "REPLACE_WITH_UBUNTU_2404_X86_64_IMAGE_NUMBER"
+server_spec_code = "REPLACE_WITH_COMPATIBLE_SPEC"
+access_control_group_no_list = ["REPLACE_WITH_EXISTING_RESTRICTED_ACG"]
+# XEN/RHV may instead use BOTH product-code fields; remove the two numbered fields.

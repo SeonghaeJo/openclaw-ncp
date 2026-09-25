@@ -1,224 +1,173 @@
 ---
-- name: Require Debian/Ubuntu
+- name: Enforce supported scope before mutation
   ansible.builtin.assert:
-    that: ansible_os_family == "Debian"
+    that:
+      - openclaw_new_host_ack | bool
+      - ansible_distribution == 'Ubuntu'
+      - ansible_distribution_version == '24.04'
+      - ansible_architecture == 'x86_64'
+      - openclaw_gateway_mode == 'local'
+      - openclaw_gateway_bind == 'loopback'
+      - openclaw_gateway_auth_mode == 'token'
+      - openclaw_gateway_port | int > 1024
+      - openclaw_gateway_port | int < 65536
+      - openclaw_user is match('^[a-z_][a-z0-9_-]*$')
+      - openclaw_home is match('^/[a-zA-Z0-9_/-]+$')
+      - openclaw_env_dir is match('^/[a-zA-Z0-9_/-]+$')
+      - openclaw_gateway_env_file is match('^/[a-zA-Z0-9_./-]+$')
+      - node_root == '/opt/node-v24.21.0-linux-x64'
+      - node_sha256 == 'fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6'
+      - node_version == '24.21.0'
+      - npm_version == '11.19.0'
+      - openclaw_version == '2026.9.6'
+    fail_msg: 'Only acknowledged NEW Ubuntu 24.04 x86_64 hosts and pinned local/loopback/token baseline are supported.'
 
-- name: Install bootstrap packages
+- name: Install bootstrap OS packages
   ansible.builtin.apt:
-    name: [ca-certificates, curl, gnupg, git]
+    name: [ca-certificates, xz-utils, git, python3, acl, build-essential, iproute2]
     state: present
     update_cache: true
+    cache_valid_time: 86400
 
-- name: Create dev user
+- name: Create service user with explicit home
   ansible.builtin.user:
     name: "{{ openclaw_user }}"
+    home: "{{ openclaw_home }}"
     shell: /bin/bash
     create_home: true
-    state: present
 
-- name: Read current Node major
-  ansible.builtin.shell: "node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\\1/' || true"
-  args:
-    executable: /bin/bash
-  register: current_node_major
+- name: Resolve primary group
+  ansible.builtin.command:
+    argv: [id, -gn, "{{ openclaw_user }}"]
+  register: user_group
   changed_when: false
 
-- name: Configure NodeSource Node 24 repository
-  ansible.builtin.shell: |
-    set -euo pipefail
-    curl -fsSL "https://deb.nodesource.com/setup_{{ node_major }}.x" | bash -
-  args:
-    executable: /bin/bash
-  when: current_node_major.stdout != node_major
+- name: Download exact upstream Node archive
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+    dest: "/var/cache/node-v{{ node_version }}-linux-x64.tar.xz"
+    checksum: "sha256:{{ node_sha256 }}"
+    mode: '0644'
 
-- name: Install Node.js
-  ansible.builtin.apt:
-    name: nodejs
-    state: present
-    update_cache: true
+- name: Extract dedicated pinned Node runtime
+  ansible.builtin.unarchive:
+    src: "/var/cache/node-v{{ node_version }}-linux-x64.tar.xz"
+    dest: /opt
+    remote_src: true
+    creates: "{{ node_root }}/bin/node"
 
-- name: Verify Node major
-  ansible.builtin.shell: |
-    test "$(node --version | sed -E 's/^v([0-9]+).*/\1/')" = "{{ node_major }}"
-  args:
-    executable: /bin/bash
-  changed_when: false
-
-- name: Create workspace and npm prefix
+- name: Create user directories
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ item.path }}"
     state: directory
     owner: "{{ openclaw_user }}"
-    group: "{{ openclaw_user }}"
-    mode: "0755"
+    group: "{{ user_group.stdout }}"
+    mode: "{{ item.mode }}"
   loop:
-    - "{{ openclaw_workspace }}"
-    - "{{ openclaw_home }}/.npm-global"
+    - {path: '{{ openclaw_workspace }}', mode: '0755'}
+    - {path: '{{ openclaw_home }}/.npm-global', mode: '0755'}
+    - {path: '{{ openclaw_home }}/.openclaw', mode: '0700'}
+    - {path: '{{ openclaw_agent_workspace }}', mode: '0700'}
+    - {path: '{{ openclaw_env_dir }}', mode: '0700'}
+    - {path: '{{ openclaw_home }}/.local/lib/openclaw-ncp', mode: '0700'}
+    - {path: '{{ openclaw_home }}/.config/systemd/user/openclaw-gateway.service.d', mode: '0755'}
 
-- name: Configure npm prefix
-  ansible.builtin.copy:
-    dest: "{{ openclaw_home }}/.npmrc"
-    content: "prefix={{ openclaw_home }}/.npm-global\n"
-    owner: "{{ openclaw_user }}"
-    group: "{{ openclaw_user }}"
-    mode: "0600"
-
-- name: Put npm global bin on PATH
+- name: Preserve npmrc while converging prefix
   ansible.builtin.lineinfile:
-    path: "{{ openclaw_home }}/.profile"
-    line: 'export PATH="$HOME/.npm-global/bin:$PATH"'
+    path: "{{ openclaw_home }}/.npmrc"
+    regexp: '^\s*prefix\s*='
+    line: "prefix={{ openclaw_home }}/.npm-global"
     create: true
     owner: "{{ openclaw_user }}"
-    group: "{{ openclaw_user }}"
+    group: "{{ user_group.stdout }}"
+    mode: '0600'
 
-- name: Read installed OpenClaw version
+- name: Preserve profile while managing runtime PATH
+  ansible.builtin.blockinfile:
+    path: "{{ openclaw_home }}/.profile"
+    marker: '# {mark} OPENCLAW NCP PATH'
+    block: 'export PATH="{{ openclaw_home }}/.npm-global/bin:{{ node_root }}/bin:$PATH"'
+    create: true
+    owner: "{{ openclaw_user }}"
+    group: "{{ user_group.stdout }}"
+    mode: '0644'
+
+- name: Install convergence helper
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ openclaw_home }}/.local/lib/openclaw-ncp/{{ item }}"
+    owner: "{{ openclaw_user }}"
+    group: "{{ user_group.stdout }}"
+    mode: '0700'
+
+  loop: [converge.py, npm-artifacts.json]
+
+- name: Prepare user configuration without shell or token argv
   become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    export PATH="{{ openclaw_home }}/.npm-global/bin:$PATH"
-    openclaw --version 2>/dev/null | awk '{print $2}' || true
-  args:
-    executable: /bin/bash
-  register: installed_openclaw_version
+  environment:
+    HOME: "{{ openclaw_home }}"
+    PATH: "{{ openclaw_home }}/.npm-global/bin:{{ node_root }}/bin:/usr/bin:/bin"
+    OPENCLAW_CONFIG_PATH: "{{ openclaw_home }}/.openclaw/openclaw.json"
+    OPENCLAW_STATE_DIR: "{{ openclaw_home }}/.openclaw"
+    NCP_SUPPLIED_TOKEN: "{{ openclaw_gateway_token }}"
+    NCP_ROTATE_TOKEN: "{{ openclaw_rotate_token | bool | ternary('1', '0') }}"
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', prepare, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}']
+  register: prepared
+  changed_when: "'CHANGED' in prepared.stdout"
+  no_log: true
+
+# gateway install starts immediately; drop-in MUST precede the CLI call.
+- name: Supply SecretRef before any service start
+  ansible.builtin.copy:
+    dest: "{{ openclaw_home }}/.config/systemd/user/openclaw-gateway.service.d/20-ncp-env.conf"
+    content: "[Service]\nEnvironmentFile={{ openclaw_gateway_env_file }}\n"
+    owner: "{{ openclaw_user }}"
+    group: "{{ user_group.stdout }}"
+    mode: '0644'
+  register: env_dropin
+
+- name: Read linger state
+  ansible.builtin.command:
+    argv: [loginctl, show-user, '{{ openclaw_user }}', -p, Linger, --value]
+  register: linger
   changed_when: false
+  failed_when: false
 
-- name: Install pinned OpenClaw
-  become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    set -euo pipefail
-    export PATH="{{ openclaw_home }}/.npm-global/bin:$PATH"
-    npm install -g "openclaw@{{ openclaw_version }}"
-  args:
-    executable: /bin/bash
-  when: installed_openclaw_version.stdout != openclaw_version
+- name: Enable linger when needed
+  ansible.builtin.command:
+    argv: [loginctl, enable-linger, '{{ openclaw_user }}']
+  when: linger.rc != 0 or linger.stdout != 'yes'
+  changed_when: true
 
-# Prepare user systemd before installing/starting the Gateway.
-- name: Enable linger
-  ansible.builtin.command: "loginctl enable-linger {{ openclaw_user }}"
-  changed_when: false
-
-- name: Resolve dev uid
-  ansible.builtin.command: "id -u {{ openclaw_user }}"
+- name: Resolve uid
+  ansible.builtin.command:
+    argv: [id, -u, '{{ openclaw_user }}']
   register: openclaw_uid
   changed_when: false
 
-- name: Start user systemd manager
-  ansible.builtin.systemd:
+- name: Start user manager
+  ansible.builtin.systemd_service:
     name: "user@{{ openclaw_uid.stdout }}.service"
     state: started
 
-- name: Wait for user runtime dir
+- name: Wait for user bus
   ansible.builtin.wait_for:
-    path: "/run/user/{{ openclaw_uid.stdout }}"
-    state: present
-    timeout: 20
-
-- name: Create secret env directory
-  ansible.builtin.file:
-    path: "{{ openclaw_env_dir }}"
-    state: directory
-    owner: "{{ openclaw_user }}"
-    group: "{{ openclaw_user }}"
-    mode: "0700"
-
-- name: Write Gateway secret env file
-  ansible.builtin.copy:
-    dest: "{{ openclaw_gateway_env_file }}"
-    content: "OPENCLAW_GATEWAY_TOKEN={{ openclaw_gateway_token }}\n"
-    owner: "{{ openclaw_user }}"
-    group: "{{ openclaw_user }}"
-    mode: "0600"
-  no_log: true
-  register: gateway_secret
-
-# Non-interactive onboarding records gateway.mode=local and stores the token as
-# an environment SecretRef instead of plaintext.
-- name: Initialize Gateway config with token SecretRef
-  become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    set -euo pipefail
-    export PATH="{{ openclaw_home }}/.npm-global/bin:$PATH"
-    export OPENCLAW_GATEWAY_TOKEN="{{ openclaw_gateway_token }}"
-    openclaw onboard       --non-interactive       --accept-risk       --mode local       --gateway-auth token       --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN       --gateway-bind "{{ openclaw_gateway_bind }}"       --skip-health       --skip-bootstrap
-    openclaw config set gateway.port "{{ openclaw_gateway_port }}"
-    openclaw config set gateway.auth.mode "{{ openclaw_gateway_auth_mode }}"
-  args:
-    executable: /bin/bash
-  no_log: true
-  changed_when: false
-
-- name: Check Gateway unit
-  ansible.builtin.stat:
-    path: "{{ openclaw_home }}/.config/systemd/user/openclaw-gateway.service"
-  register: gateway_unit
-
-- name: Install Gateway user service
-  become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    set -euo pipefail
-    export PATH="{{ openclaw_home }}/.npm-global/bin:$PATH"
-    export XDG_RUNTIME_DIR="/run/user/{{ openclaw_uid.stdout }}"
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-    export OPENCLAW_GATEWAY_TOKEN="{{ openclaw_gateway_token }}"
-    openclaw gateway install
-  args:
-    executable: /bin/bash
-  no_log: true
-  when: not gateway_unit.stat.exists
-
-- name: Inject Gateway environment file into user unit
-  ansible.builtin.blockinfile:
-    path: "{{ openclaw_home }}/.config/systemd/user/openclaw-gateway.service"
-    insertafter: '^\[Service\]$'
-    marker: "# {mark} ANSIBLE MANAGED GATEWAY ENV"
-    block: |
-      EnvironmentFile={{ openclaw_gateway_env_file }}
-  owner: "{{ openclaw_user }}"
-  group: "{{ openclaw_user }}"
-  mode: "0644"
-  register: gateway_unit_env
-
-- name: Reload and restart Gateway when config/secret changed
-  become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    set -euo pipefail
-    export XDG_RUNTIME_DIR="/run/user/{{ openclaw_uid.stdout }}"
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-    systemctl --user daemon-reload
-    systemctl --user enable openclaw-gateway.service
-    systemctl --user restart openclaw-gateway.service
-  args:
-    executable: /bin/bash
-  when: gateway_unit_env.changed or gateway_secret.changed or not gateway_unit.stat.exists
-
-- name: Ensure Gateway is running
-  become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    export XDG_RUNTIME_DIR="/run/user/{{ openclaw_uid.stdout }}"
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-    systemctl --user start openclaw-gateway.service
-  args:
-    executable: /bin/bash
-  changed_when: false
-
-- name: Wait for loopback Gateway
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ openclaw_gateway_port }}"
-    state: started
+    path: "/run/user/{{ openclaw_uid.stdout }}/bus"
     timeout: 30
 
-- name: Verify Gateway config and service
+- name: Converge and verify service under its owner
   become_user: "{{ openclaw_user }}"
-  ansible.builtin.shell: |
-    set -euo pipefail
-    export PATH="{{ openclaw_home }}/.npm-global/bin:$PATH"
-    export OPENCLAW_GATEWAY_TOKEN="{{ openclaw_gateway_token }}"
-    test "$(openclaw config get gateway.mode)" = "local"
-    test "$(openclaw config get gateway.bind)" = "loopback"
-    test "$(openclaw config get gateway.port)" = "{{ openclaw_gateway_port }}"
-    test "$(openclaw config get gateway.auth.mode)" = "token"
-    openclaw gateway status
-  args:
-    executable: /bin/bash
+  environment:
+    HOME: "{{ openclaw_home }}"
+    PATH: "{{ openclaw_home }}/.npm-global/bin:{{ node_root }}/bin:/usr/bin:/bin"
+    OPENCLAW_CONFIG_PATH: "{{ openclaw_home }}/.openclaw/openclaw.json"
+    OPENCLAW_STATE_DIR: "{{ openclaw_home }}/.openclaw"
+    XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ openclaw_uid.stdout }}/bus"
+    NCP_RESTART: "{{ (prepared.changed or env_dropin.changed) | ternary('1', '0') }}"
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', service, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}']
+  register: serviced
+  changed_when: "'CHANGED' in serviced.stdout"
   no_log: true
-  changed_when: false

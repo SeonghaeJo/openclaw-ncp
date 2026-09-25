@@ -1,0 +1,27 @@
+---
+- name: Verify through the existing bootstrap SSH identity (no dev SSH key required)
+  hosts: openclaw
+  become: true
+  tasks:
+    - name: Load role defaults without running deployment tasks
+      ansible.builtin.import_role:
+        name: openclaw
+        tasks_from: verify-defaults
+    - name: Resolve uid
+      ansible.builtin.command:
+        argv: [id, -u, '{{ openclaw_user }}']
+      register: uid
+      changed_when: false
+    - name: Verify as service owner
+      become_user: '{{ openclaw_user }}'
+      environment:
+        HOME: '{{ openclaw_home }}'
+        PATH: '{{ openclaw_home }}/.npm-global/bin:{{ node_root }}/bin:/usr/bin:/bin'
+        OPENCLAW_CONFIG_PATH: '{{ openclaw_home }}/.openclaw/openclaw.json'
+        OPENCLAW_STATE_DIR: '{{ openclaw_home }}/.openclaw'
+        XDG_RUNTIME_DIR: '/run/user/{{ uid.stdout }}'
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/{{ uid.stdout }}/bus'
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', verify, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}']
+      changed_when: false
+      no_log: true

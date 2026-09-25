@@ -1,12 +1,19 @@
 ---
+openclaw_new_host_ack: false
 openclaw_user: dev
-openclaw_home: /home/dev
-openclaw_workspace: /home/dev/workspace
-node_major: "24"
+openclaw_home: "/home/{{ openclaw_user }}"
+openclaw_workspace: "{{ openclaw_home }}/workspace"
+openclaw_agent_workspace: "{{ openclaw_home }}/.openclaw/workspace"
 openclaw_version: "2026.9.6"
+node_version: "24.21.0"
+node_sha256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+node_root: "/opt/node-v{{ node_version }}-linux-x64"
+npm_version: "11.19.0"
 openclaw_gateway_port: 18789
 openclaw_gateway_bind: loopback
 openclaw_gateway_mode: local
 openclaw_gateway_auth_mode: token
-openclaw_env_dir: /home/dev/.config/openclaw
-openclaw_gateway_env_file: /home/dev/.config/openclaw/gateway.env
+openclaw_env_dir: "{{ openclaw_home }}/.config/openclaw"
+openclaw_gateway_env_file: "{{ openclaw_env_dir }}/gateway.env"
+openclaw_gateway_token: "{{ lookup('env', 'OPENCLAW_GATEWAY_TOKEN') }}"
+openclaw_rotate_token: false

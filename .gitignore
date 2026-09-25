@@ -1,9 +1,11 @@
 terraform/.terraform/
-terraform/.terraform.lock.hcl
-terraform/*.tfstate
-terraform/*.tfstate.*
+terraform/*.tfstate*
+terraform/*.tfplan
 terraform/terraform.tfvars
 ansible/inventory.yml
 .env
 *.pem
 *.key
+.tools/
+.venv/
+__pycache__/

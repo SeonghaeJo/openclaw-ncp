@@ -15,6 +15,8 @@
       - openclaw_home is match('^/[a-zA-Z0-9_/-]+$')
       - openclaw_env_dir is match('^/[a-zA-Z0-9_/-]+$')
       - openclaw_gateway_env_file is match('^/[a-zA-Z0-9_./-]+$')
+      - openclaw_gateway_env_file == openclaw_env_dir + '/gateway.env'
+      - openclaw_env_dir == openclaw_home + '/.config/openclaw'
       - node_root == '/opt/node-v24.21.0-linux-x64'
       - node_sha256 == 'fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6'
       - node_version == '24.21.0'

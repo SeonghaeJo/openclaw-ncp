@@ -1,0 +1,14 @@
+---
+- name: Bootstrap reproducible OpenClaw host
+  hosts: openclaw
+  become: true
+  vars:
+    openclaw_gateway_token: "{{ lookup('env', 'OPENCLAW_GATEWAY_TOKEN') | default('', true) }}"
+  pre_tasks:
+    - name: Require externally supplied Gateway token
+      ansible.builtin.assert:
+        that:
+          - openclaw_gateway_token | length >= 32
+        fail_msg: "Set OPENCLAW_GATEWAY_TOKEN before running Ansible."
+  roles:
+    - openclaw

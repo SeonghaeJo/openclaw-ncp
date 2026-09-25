@@ -1,0 +1,7 @@
+region                    = "KR"
+site                      = "public"
+name                      = "openclaw"
+subnet_no                 = "REPLACE_ME"
+server_image_product_code = "REPLACE_ME"
+server_product_code       = "REPLACE_ME"
+login_key_name            = "REPLACE_ME"

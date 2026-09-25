@@ -1,0 +1,12 @@
+---
+openclaw_user: dev
+openclaw_home: /home/dev
+openclaw_workspace: /home/dev/workspace
+node_major: "24"
+openclaw_version: "2026.9.6"
+openclaw_gateway_port: 18789
+openclaw_gateway_bind: loopback
+openclaw_gateway_mode: local
+openclaw_gateway_auth_mode: token
+openclaw_env_dir: /home/dev/.config/openclaw
+openclaw_gateway_env_file: /home/dev/.config/openclaw/gateway.env

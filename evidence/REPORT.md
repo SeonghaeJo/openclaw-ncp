@@ -11,7 +11,8 @@ Git identity was unset; commits use per-command OpenClaw Automation
 - Ubuntu/Node/npm/OpenClaw/id/linger/loopback/config nonsecret field readback: recorded
   in README. No auth payloads printed, copied or committed.
 - Ansible-core 2.19.3 syntax: deploy and verify playbooks PASS (ansible-syntax.txt).
-- Python unittest: 6 cases including real isolated OpenClaw 2026.9.6 schema/config
+- Python unittest: 7 cases including explicit authored model-policy/legacy-removal
+  assertions; real isolated OpenClaw 2026.9.6 schema/config
   initialization + second run byte stability + unrelated-field preservation;
   token first/reuse/rotation/malformed cases; mocked service install/restart/spec drift;
   negative wildcard/external listeners; YAML/EnvironmentFile render/SSH policy.

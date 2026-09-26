@@ -1,4 +1,5 @@
 test_listener_negative_cases (test_converge.Tests.test_listener_negative_cases) ... ok
+test_model_policy_is_explicit_and_legacy_model_is_removed (test_converge.Tests.test_model_policy_is_explicit_and_legacy_model_is_removed) ... ok
 test_real_cli_config_first_second_merge (test_converge.Tests.test_real_cli_config_first_second_merge) ... ok
 test_service_mock_first_second_restart_drift (test_converge.Tests.test_service_mock_first_second_restart_drift) ... ok
 test_token_lifecycle (test_converge.Tests.test_token_lifecycle) ... ok
@@ -6,6 +7,6 @@ test_ssh_verification_enabled (test_role.RoleTests.test_ssh_verification_enabled
 test_yaml_modules_and_start_order (test_role.RoleTests.test_yaml_modules_and_start_order) ... ok
 
 ----------------------------------------------------------------------
-Ran 6 tests in 12.957s
+Ran 7 tests in 20.854s
 
 OK

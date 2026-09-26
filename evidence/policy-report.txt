@@ -1,0 +1,29 @@
+Model-policy evidence — 2026-09-27
+
+This is a nonsecret read-only policy record. It records expected routing and the
+commands/tests used to verify the authored new-host policy; it is not a credential
+dump or a captured origin configuration.
+
+Expected routing
+- default/coordinator/utility: openai/gpt-5.6-luna
+- researcher: openai/gpt-5.6-luna
+- writer/reviewer: openai/gpt-5.6-terra
+- fallback: nvidia/nemotron-3-ultra-550b-a55b
+- retired registry key removed: openai/gpt-6-astra
+- controls: cache-ttl/1h, safeguard compaction, maxConcurrent=3,
+  archiveAfterMinutes=60, coordinator delegationMode=suggest
+
+Read-only origin-snapshot provenance (no output retained because status/config
+commands may expose account metadata):
+- openclaw models status
+- redacted configuration inspection
+- openclaw config get for policy paths
+
+Authored-policy check provenance:
+- NCP_REAL_CLI_TEST=1 .venv/bin/python -m unittest discover -s tests -v
+- test_model_policy_is_explicit_and_legacy_model_is_removed
+- 2026-09-27 result: 7 tests passed; full redacted test transcript: tests.txt
+
+The converger's desired policy is in ansible/roles/openclaw/files/converge.py.
+It writes only a new-host configuration and does not copy origin credentials or
+configuration databases.

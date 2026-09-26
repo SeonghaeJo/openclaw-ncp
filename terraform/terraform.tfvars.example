@@ -1,7 +1,12 @@
 region = "KR"
 site = "public"
 name = "openclaw"
-subnet_no = "REPLACE_ME"
+vpc_mode = "reuse"
+subnet_mode = "reuse"
+# vpc_no is optional for legacy reuse; explicit ID adds a membership check.
+vpc_no = "REPLACE_WITH_VPC_ID"
+subnet_no = "REPLACE_WITH_SUBNET_ID"
+allocate_public_ip = true
 login_key_name = "REPLACE_ME"
 hypervisor = "KVM"
 server_image_number = "REPLACE_WITH_UBUNTU_2404_X86_64_IMAGE_NUMBER"

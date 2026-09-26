@@ -1,0 +1,26 @@
+Success! The configuration is valid.
+
+tests/network.tftest.hcl... in progress
+  run "legacy_reuse"... pass
+  run "existing_vpc_new_subnet"... pass
+  run "new_vpc_new_subnet"... pass
+  run "create_with_existing_vpc"... pass
+  run "create_vpc_reuse_subnet"... pass
+  run "subnet_outside_vpc"... pass
+  run "public_cidr"... pass
+  run "private_public_ip"... pass
+  run "zone_mismatch"... pass
+  run "vpc_mismatch"... pass
+  run "reuse_with_cidr"... pass
+  run "missing_ids"... pass
+  run "world_ssh_rejected"... pass
+  run "acg_wrong_vpc"... pass
+  run "public_new_opt_in"... pass
+  run "empty_id_rejected"... pass
+  run "bad_mode"... pass
+tests/network.tftest.hcl... tearing down
+tests/network.tftest.hcl... pass
+
+Success! 17 passed, 0 failed.
+PASS: provider rejects 10.20.1.1/24 (expected nonzero)
+PASS: provider rejects oops (expected nonzero)

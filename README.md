@@ -25,10 +25,11 @@ transitive lock/build archive, outside this baseline. Terraform provider lock is
   dependencies; outbound HTTPS/DNS to Node, npm, Ubuntu and package build sources.
 * Controller: Python 3.12, Ansible-core 2.19.3, Terraform 1.9.8 (validated versions).
   Repository-local validation installations live in ignored .venv/.tools.
-* Existing NCP VPC PUBLIC/GEN subnet, compatible zone/image/spec, routing and Internet
-  access; existing login key; 1–3 existing ACGs from the same VPC. ACG **and NACL**
-  allow SSH only from operator IP/CIDR, required outbound traffic and return traffic.
-  Never open 18789 publicly. No VPC/NACL/ACG creation or rule editing is automated.
+* NCP networking: explicitly reuse VPC/subnet IDs or create new networks; see
+  [network modes, security and state migration](docs/networking.md). Compatible
+  zone/image/spec, existing login key and approved SSH/egress paths are required.
+  Fresh defaults are private with no SSH ingress; no NAT is created implicitly.
+  Review ACG and NACL rules and routes. Never open 18789 publicly.
 * Verify the SSH host fingerprint through trusted NCP console/out-of-band information
   before adding it to known_hosts. ssh-keyscan alone does not establish trust.
 * Bootstrap inventory account already has working SSH and root/passwordless sudo.
@@ -42,7 +43,9 @@ Copy terraform/terraform.tfvars.example to terraform/terraform.tfvars and select
 Ubuntu 24.04 x86_64 image/spec explicitly. Provider 4.0.7 accepts image_number/spec
 for KVM/XEN/RHV; legacy product-code pairs support only XEN/RHV. Never mix pairs.
 The hypervisor label is an input guard, not live validation of the account image.
-A primary NIC attaches the supplied ACGs. Public IP allocation/server creation costs
+A primary NIC attaches supplied or dedicated restricted ACGs. See the three example
+tfvars files in terraform/ and [network guidance](docs/networking.md). Existing ID
+lookup errors fail closed, never trigger creation. Public IP allocation/server creation costs
 money and requires a separate human decision.
 
 ```bash

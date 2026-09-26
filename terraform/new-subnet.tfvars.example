@@ -1,0 +1,19 @@
+region = "KR"
+site = "public"
+name = "openclaw"
+login_key_name = "REPLACE_ME"
+hypervisor = "KVM"
+server_image_number = "REPLACE_WITH_UBUNTU_2404_X86_64_IMAGE_NUMBER"
+server_spec_code = "REPLACE_WITH_COMPATIBLE_SPEC"
+subnet_mode = "create"
+subnet_cidr = "10.20.1.0/24"
+zone = "KR-2"
+subnet_type = "PRIVATE"
+allocate_public_ip = false
+access_control_group_no_list = []
+ssh_source_cidrs = []
+# Private defaults need separately approved SSH and Internet egress paths.
+# For direct public SSH, opt into PUBLIC + public IP and your narrow source CIDR.
+vpc_mode = "reuse"
+vpc_no = "REPLACE_WITH_VPC_ID"
+# Adjust subnet_cidr to fit this VPC without overlapping any existing subnet.

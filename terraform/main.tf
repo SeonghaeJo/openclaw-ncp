@@ -1,10 +1,11 @@
 resource "ncloud_network_interface" "primary" {
+  depends_on            = [terraform_data.network_contract, data.ncloud_access_control_group.existing, ncloud_access_control_group_rule.managed]
   name                  = "${var.name}-nic"
-  subnet_no             = var.subnet_no
-  access_control_groups = var.access_control_group_no_list
+  subnet_no             = local.subnet_no
+  access_control_groups = local.acg_ids
 }
 resource "ncloud_server" "openclaw" {
-  subnet_no                 = var.subnet_no
+  subnet_no                 = local.subnet_no
   name                      = var.name
   server_image_number       = var.server_image_number
   server_spec_code          = var.server_spec_code
@@ -25,7 +26,12 @@ resource "ncloud_server" "openclaw" {
     }
   }
 }
+moved {
+  from = ncloud_public_ip.openclaw
+  to   = ncloud_public_ip.openclaw[0]
+}
 resource "ncloud_public_ip" "openclaw" {
+  count              = local.public_ip_enabled ? 1 : 0
   server_instance_no = ncloud_server.openclaw.id
   description        = "OpenClaw bootstrap SSH"
 }

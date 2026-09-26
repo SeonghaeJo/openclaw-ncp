@@ -19,6 +19,69 @@ can vary. Top-level npm tarballs are hash-pinned; **no full npm dependency lock 
 claimed**. Bit-for-bit/offline reproduction requires a reviewed artifact mirror and
 transitive lock/build archive, outside this baseline. Terraform provider lock is committed.
 
+## Model policy reproduced from the running server
+
+The following is the read-only source-of-truth snapshot checked on **2026-09-27**
+from the running OpenClaw 2026.9.6 host. The convergence helper manages these
+values for a new host; it does not copy the origin host's config or credential
+databases.
+
+| Scope | Model/policy |
+| --- | --- |
+| coordinator and ordinary agents | `openai/gpt-5.6-luna` |
+| researcher | `openai/gpt-5.6-luna` |
+| writer and reviewer | `openai/gpt-5.6-terra` |
+| utility | `openai/gpt-5.6-luna` |
+| OpenAI rate limit, outage, or quota fallback | `nvidia/nemotron-3-ultra-550b-a55b` |
+
+Token-saving controls are `contextPruning.mode=cache-ttl` with `ttl=1h`,
+`compaction.mode=safeguard`, and `subagents.maxConcurrent=3` (with
+`archiveAfterMinutes=60`). Coordinator delegation is `suggest`. The retired
+`openai/gpt-6-astra` registry entry is removed by convergence; it is not a
+selected or fallback model.
+
+### Credential bootstrap (one time per host)
+
+Credentials stay in OpenClaw's auth profiles and are never placed in Git,
+Terraform state, Ansible vars/templates/inventory, or this README. After the
+new host is provisioned, authenticate interactively on that host (or through a
+trusted local terminal) and inspect only redacted status:
+
+```bash
+# Existing OpenAI OAuth profile; use the provider's interactive recovery only if needed.
+openclaw models auth login --provider openai --method oauth
+
+# NVIDIA free fallback: interactive prompt; do not pass the key as an argument.
+openclaw models auth login --provider nvidia --method api-key
+
+openclaw models status
+```
+
+Do not use `--nvidia-api-key` on a shell command line. Do not export a key in a
+playbook or persist it in `terraform.tfvars`; if automation is required, pause
+after provisioning and perform this bootstrap with a local secret manager or
+masked terminal. The expected auth result is an OpenAI OAuth profile and an
+OpenClaw-managed NVIDIA API-key profile; credential values themselves must never
+be included in evidence or logs.
+
+### Model verification and fallback test
+
+Run `openclaw models status` and confirm the routing above, then make one short
+GPT test and one explicit Nemotron test through the local Gateway. Use a fresh
+private test session and do not use `--deliver`:
+
+```bash
+openclaw agent --agent coordinator --model openai/gpt-5.6-luna \
+  --message 'Reply only: GPT route OK' --json
+openclaw agent --agent coordinator --model nvidia/nemotron-3-ultra-550b-a55b \
+  --message 'Reply only: Nemotron route OK' --json
+```
+
+This validates both credentials and model routing without stopping the Gateway.
+It does not force a production rate-limit/quota event; fallback behavior is
+verified by the authored config plus a direct fallback-model call. Review the
+JSON only for success/model identity and redact any content before sharing it.
+
 ## Prerequisites
 
 * Authorized **new** Ubuntu 24.04 x86_64 VM, sufficient memory/storage for npm native
@@ -164,6 +227,12 @@ The real CLI test needs installed 2026.9.6 in ~/.npm-global/bin; it isolates HOM
 state and config entirely below .tools and never starts a Gateway. Service idempotency
 is mocked, not a VM/systemd integration test. See evidence/REPORT.md for results and
 remaining gates. No full playbook is run on localhost, even with --check.
+
+The model-policy unit test also checks the authored routing, token-saving controls,
+fallback, coordinator delegation mode, and removal of the legacy gpt-6-astra entry.
+The read-only server checks used for the snapshot were `openclaw models status`,
+redacted config inspection, `openclaw config get` for the policy paths, and
+`openclaw config validate`; no production config was changed during that audit.
 
 Sources: installed 2026.9.6 docs/cli/config.md, docs/cli/gateway.md,
 docs/gateway/secrets/secretref-contract.md; dist/gateway-install-token-BO-3h7CJ.mjs

@@ -68,13 +68,51 @@ def desired(workspace, port):
     return {'gateway': {'mode': 'local', 'bind': 'loopback', 'port': int(port),
                         'auth': {'mode': 'token', 'token': {'source': 'env', 'provider': 'ncp_env', 'id': 'OPENCLAW_GATEWAY_TOKEN'}}},
             'secrets': {'providers': {'ncp_env': {'source': 'env', 'allowlist': ['OPENCLAW_GATEWAY_TOKEN']}}},
-            'agents': {'defaults': {'workspace': workspace}}}
+            'agents': {
+                'defaults': {
+                    'workspace': workspace,
+                    'model': {
+                        'primary': 'openai/gpt-5.6-luna',
+                        'fallbacks': ['nvidia/nemotron-3-ultra-550b-a55b'],
+                    },
+                    'utilityModel': 'openai/gpt-5.6-luna',
+                    'contextPruning': {'mode': 'cache-ttl', 'ttl': '1h'},
+                    'compaction': {'mode': 'safeguard'},
+                    'subagents': {'maxConcurrent': 3, 'archiveAfterMinutes': 60},
+                    'models': {
+                        'openai/gpt-5.6-luna': {},
+                        'openai/gpt-5.6-terra': {},
+                        'nvidia/nemotron-3-ultra-550b-a55b': {},
+                        # A null entry in the patch removes the retired legacy key.
+                        'openai/gpt-6-astra': None,
+                    },
+                },
+                'entries': {
+                    'coordinator': {'subagents': {'delegationMode': 'suggest'}},
+                    'researcher': {'model': 'openai/gpt-5.6-luna'},
+                    'writer': {'model': 'openai/gpt-5.6-terra'},
+                    'reviewer': {'model': 'openai/gpt-5.6-terra'},
+                },
+            }}
 
 
 def contains(current, patch):
     if isinstance(patch, dict):
         return isinstance(current, dict) and all(k in current and contains(current[k], v) for k, v in patch.items())
     return current == patch
+
+
+def config_matches(current, patch):
+    """Match authored values while treating null patch values as deletions."""
+    if not isinstance(current, dict) or not isinstance(patch, dict):
+        return current == patch
+    for key, value in patch.items():
+        if value is None:
+            if key in current:
+                return False
+        elif key not in current or not config_matches(current[key], value):
+            return False
+    return True
 
 
 def config_read():
@@ -94,7 +132,10 @@ def ensure_config(workspace, port):
     provider = current.get('secrets', {}).get('providers', {}).get('ncp_env')
     if provider is not None and provider != patch['secrets']['providers']['ncp_env']:
         raise RuntimeError('reserved ncp_env provider conflict')
-    if contains(current, patch):
+    # The model registry entry is intentionally deleted through a null patch;
+    # it must therefore be checked separately from recursive value matching.
+    legacy_models = current.get('agents', {}).get('defaults', {}).get('models', {})
+    if config_matches(current, patch) and 'openai/gpt-6-astra' not in legacy_models:
         run(['openclaw', 'config', 'validate'])
         return False
     run(['openclaw', 'config', 'patch', '--stdin', '--dry-run'], stdin=json.dumps(patch))
@@ -142,7 +183,7 @@ def listeners_ok(text, port):
 
 def verify(workspace, port, node_root):
     verify_versions(node_root)
-    if not contains(config_read(), desired(workspace, port)) or not Path(workspace).is_dir():
+    if not config_matches(config_read(), desired(workspace, port)) or not Path(workspace).is_dir():
         raise RuntimeError('config/workspace mismatch')
     run(['openclaw', 'config', 'validate'])
     run(['systemctl', '--user', 'is-active', '--quiet', 'openclaw-gateway.service'])

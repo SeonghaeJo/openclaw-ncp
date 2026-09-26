@@ -12,6 +12,22 @@ c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 
 class Tests(unittest.TestCase):
+    def test_model_policy_is_explicit_and_legacy_model_is_removed(self):
+        policy = c.desired('/tmp/workspace', 18789)['agents']
+        self.assertEqual(policy['defaults']['model'], {
+            'primary': 'openai/gpt-5.6-luna',
+            'fallbacks': ['nvidia/nemotron-3-ultra-550b-a55b'],
+        })
+        self.assertEqual(policy['defaults']['utilityModel'], 'openai/gpt-5.6-luna')
+        self.assertEqual(policy['defaults']['contextPruning'], {'mode': 'cache-ttl', 'ttl': '1h'})
+        self.assertEqual(policy['defaults']['compaction'], {'mode': 'safeguard'})
+        self.assertEqual(policy['defaults']['subagents']['maxConcurrent'], 3)
+        self.assertEqual(policy['entries']['coordinator']['subagents']['delegationMode'], 'suggest')
+        self.assertEqual(policy['entries']['researcher']['model'], 'openai/gpt-5.6-luna')
+        self.assertEqual(policy['entries']['writer']['model'], 'openai/gpt-5.6-terra')
+        self.assertEqual(policy['entries']['reviewer']['model'], 'openai/gpt-5.6-terra')
+        self.assertIsNone(policy['defaults']['models']['openai/gpt-6-astra'])
+
     def test_token_lifecycle(self):
         with tempfile.TemporaryDirectory(dir=ROOT / '.tools') as d:
             p = Path(d) / 'gateway.env'

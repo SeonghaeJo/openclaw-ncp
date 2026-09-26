@@ -7,6 +7,6 @@ test_ssh_verification_enabled (test_role.RoleTests.test_ssh_verification_enabled
 test_yaml_modules_and_start_order (test_role.RoleTests.test_yaml_modules_and_start_order) ... ok
 
 ----------------------------------------------------------------------
-Ran 7 tests in 20.854s
+Ran 7 tests in 20.575s
 
 OK

@@ -17,6 +17,10 @@
       - openclaw_gateway_env_file is match('^/[a-zA-Z0-9_./-]+$')
       - openclaw_gateway_env_file == openclaw_env_dir + '/gateway.env'
       - openclaw_env_dir == openclaw_home + '/.config/openclaw'
+      - (openclaw_tailscale_ready | bool and openclaw_device_pair_public_url is match('^https://[^/]+$')) or (not openclaw_tailscale_ready | bool and openclaw_device_pair_public_url == '')
+      - tailscale_package_state == 'present'
+      - tailscale_package_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - tailscale_keyring_checksum is match('^sha256:[0-9a-f]{64}$')
       - node_root == '/opt/node-v24.21.0-linux-x64'
       - node_sha256 == 'fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6'
       - node_version == '24.21.0'
@@ -24,12 +28,56 @@
       - openclaw_version == '2026.9.6'
     fail_msg: 'Only acknowledged NEW Ubuntu 24.04 x86_64 hosts and pinned local/loopback/token baseline are supported.'
 
-- name: Install bootstrap OS packages
+- name: Install CA certificates before HTTPS bootstrap
   ansible.builtin.apt:
-    name: [ca-certificates, xz-utils, git, python3, acl, build-essential, iproute2]
+    name: ca-certificates
     state: present
     update_cache: true
+
+- name: Install Tailscale repository keyring
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
+    dest: "{{ tailscale_keyring }}"
+    mode: '0644'
+    checksum: "{{ tailscale_keyring_checksum }}"
+
+- name: Configure Tailscale package repository
+  ansible.builtin.apt_repository:
+    repo: "{{ tailscale_repository }}"
+    filename: tailscale
+    state: present
+    update_cache: true
+
+- name: Install bootstrap OS packages
+  ansible.builtin.apt:
+    name: [xz-utils, git, python3, acl, build-essential, iproute2, "tailscale={{ tailscale_package_version }}"]
+    state: "{{ tailscale_package_state }}"
+    update_cache: true
     cache_valid_time: 86400
+
+- name: Ensure Tailscale service is enabled (login remains an operator step)
+  ansible.builtin.systemd_service:
+    name: tailscaled.service
+    enabled: true
+    state: started
+
+- name: Check Tailscale login before enabling OpenClaw Serve
+  ansible.builtin.command:
+    argv: [tailscale, status, --json]
+  register: tailscale_status
+  changed_when: false
+  no_log: true
+  failed_when: openclaw_tailscale_ready | bool and tailscale_status.rc != 0
+
+- name: Verify Tailscale is enrolled before enabling OpenClaw Serve
+  ansible.builtin.assert:
+    that:
+      - not (openclaw_tailscale_ready | bool) or tailscale_status.rc == 0
+      - not (openclaw_tailscale_ready | bool) or (tailscale_status.stdout | from_json).BackendState == 'Running'
+      - not (openclaw_tailscale_ready | bool) or (tailscale_status.stdout | from_json).Self.Online | bool
+      - not (openclaw_tailscale_ready | bool) or (tailscale_status.stdout | from_json).Self.DNSName is string
+      - not (openclaw_tailscale_ready | bool) or (openclaw_device_pair_public_url | urlsplit('hostname')) == ((tailscale_status.stdout | from_json).Self.DNSName | regex_replace('\\.$', ''))
+    fail_msg: 'Tailscale must be enrolled and online, and device-pair URL must match this host MagicDNS name before Serve is enabled.'
 
 - name: Create service user with explicit home
   ansible.builtin.user:
@@ -114,7 +162,7 @@
     NCP_SUPPLIED_TOKEN: "{{ openclaw_gateway_token }}"
     NCP_ROTATE_TOKEN: "{{ openclaw_rotate_token | bool | ternary('1', '0') }}"
   ansible.builtin.command:
-    argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', prepare, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}']
+    argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', prepare, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}', '{{ openclaw_device_pair_public_url }}', '{{ openclaw_tailscale_ready | ternary("1", "0") }}']
   register: prepared
   changed_when: "'CHANGED' in prepared.stdout"
   no_log: true
@@ -169,7 +217,7 @@
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ openclaw_uid.stdout }}/bus"
     NCP_RESTART: "{{ (prepared.changed or env_dropin.changed) | ternary('1', '0') }}"
   ansible.builtin.command:
-    argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', service, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}']
+    argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', service, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}', '{{ openclaw_device_pair_public_url }}', '{{ openclaw_tailscale_ready | ternary("1", "0") }}']
   register: serviced
   changed_when: "'CHANGED' in serviced.stdout"
   no_log: true

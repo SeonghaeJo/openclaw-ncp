@@ -13,7 +13,7 @@ spec.loader.exec_module(c)
 
 class Tests(unittest.TestCase):
     def test_model_policy_is_explicit_and_legacy_model_is_removed(self):
-        policy = c.desired('/tmp/workspace', 18789)['agents']
+        policy = c.desired('/tmp/workspace', 18789, 'https://host.example.ts.net', True)['agents']
         self.assertEqual(policy['defaults']['model'], {
             'primary': 'openai/gpt-5.6-luna',
             'fallbacks': ['nvidia/nemotron-3-ultra-550b-a55b'],
@@ -27,6 +27,24 @@ class Tests(unittest.TestCase):
         self.assertEqual(policy['entries']['writer']['model'], 'openai/gpt-5.6-terra')
         self.assertEqual(policy['entries']['reviewer']['model'], 'openai/gpt-5.6-terra')
         self.assertIsNone(policy['defaults']['models']['openai/gpt-6-astra'])
+
+    def test_tailscale_boundary_is_explicit(self):
+        bootstrap = c.desired('/tmp/workspace', 18789)
+        self.assertIsNone(bootstrap['gateway']['tailscale'])
+        self.assertIsNone(bootstrap['plugins']['entries']['device-pair']['config']['publicUrl'])
+        policy = c.desired('/tmp/workspace', 18789, 'https://host.example.ts.net', True)
+        self.assertEqual(policy['gateway']['trustedProxies'], ['127.0.0.1', '::1'])
+        self.assertEqual(policy['gateway']['tailscale'], {'mode': 'serve'})
+        self.assertEqual(policy['plugins']['entries']['device-pair']['config']['publicUrl'], 'https://host.example.ts.net')
+        with self.assertRaises(RuntimeError): c.desired('/tmp/workspace', 18789, 'http://10.0.0.1:18789')
+
+    def test_tailscale_disable_is_a_real_rollback_patch(self):
+        enabled = c.desired('/tmp/workspace', 18789, 'https://host.example.ts.net', True)
+        disabled = c.desired('/tmp/workspace', 18789, '', False)
+        self.assertEqual(enabled['gateway']['tailscale'], {'mode': 'serve'})
+        self.assertIsNone(disabled['gateway']['tailscale'])
+        self.assertIsNone(disabled['plugins']['entries']['device-pair']['config']['publicUrl'])
+        self.assertFalse(c.config_matches(enabled, disabled))
 
     def test_token_lifecycle(self):
         with tempfile.TemporaryDirectory(dir=ROOT / '.tools') as d:
@@ -79,14 +97,19 @@ class Tests(unittest.TestCase):
             env = {'PATH': str(Path.home() / '.npm-global/bin') + ':' + os.environ['PATH'], 'HOME': d, 'OPENCLAW_STATE_DIR': str(state), 'OPENCLAW_CONFIG_PATH': str(config),
                    'OPENCLAW_GATEWAY_TOKEN': 'sandbox-only-' + 'x' * 64}
             with patch.dict(os.environ, env):
-                self.assertTrue(c.ensure_config(str(home / 'workspace'), 28789))
+                self.assertTrue(c.ensure_config(str(home / 'workspace'), 28789, 'https://host.example.ts.net', True))
                 before = config.read_bytes()
-                self.assertFalse(c.ensure_config(str(home / 'workspace'), 28789))
+                self.assertFalse(c.ensure_config(str(home / 'workspace'), 28789, 'https://host.example.ts.net', True))
                 self.assertEqual(config.read_bytes(), before)
                 self.assertEqual(json.loads(config.read_text())['messages']['ackReactionScope'], 'group-mentions')
                 self.assertNotIn(env['OPENCLAW_GATEWAY_TOKEN'], config.read_text())
+                self.assertTrue(c.ensure_config(str(home / 'workspace'), 28789, '', False))
+                rolled_back = json.loads(config.read_text())
+                self.assertNotIn('tailscale', rolled_back['gateway'])
+                self.assertNotIn('publicUrl', rolled_back.get('plugins', {}).get('entries', {}).get('device-pair', {}).get('config', {}))
+                self.assertFalse(c.ensure_config(str(home / 'workspace'), 28789, '', False))
                 config.unlink()
-                self.assertTrue(c.ensure_config(str(home / 'workspace'), 28789))
-                self.assertFalse(c.ensure_config(str(home / 'workspace'), 28789))
+                self.assertTrue(c.ensure_config(str(home / 'workspace'), 28789, 'https://host.example.ts.net', True))
+                self.assertFalse(c.ensure_config(str(home / 'workspace'), 28789, 'https://host.example.ts.net', True))
 
 if __name__ == '__main__': unittest.main(verbosity=2)

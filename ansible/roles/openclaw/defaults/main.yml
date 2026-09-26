@@ -17,3 +17,10 @@ openclaw_env_dir: "{{ openclaw_home }}/.config/openclaw"
 openclaw_gateway_env_file: "{{ openclaw_env_dir }}/gateway.env"
 openclaw_gateway_token: "{{ lookup('env', 'OPENCLAW_GATEWAY_TOKEN') }}"
 openclaw_rotate_token: false
+openclaw_device_pair_public_url: ""
+openclaw_tailscale_ready: false
+tailscale_package_state: present
+tailscale_package_version: "1.102.4"
+tailscale_keyring: /usr/share/keyrings/tailscale-archive-keyring.gpg
+tailscale_keyring_checksum: "sha256:3e03dacf222698c60b8e2f990b809ca1b3e104de127767864284e6c228f1fb39"
+tailscale_repository: "deb [signed-by={{ tailscale_keyring }}] https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} main"

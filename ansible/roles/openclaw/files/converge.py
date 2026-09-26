@@ -64,9 +64,16 @@ def ensure_token(path, supplied, rotate=False):
     return changed
 
 
-def desired(workspace, port):
-    return {'gateway': {'mode': 'local', 'bind': 'loopback', 'port': int(port),
-                        'auth': {'mode': 'token', 'token': {'source': 'env', 'provider': 'ncp_env', 'id': 'OPENCLAW_GATEWAY_TOKEN'}}},
+def desired(workspace, port, public_url='', tailscale_ready=False):
+    if public_url and not re.fullmatch(r'https://[^/]+', public_url):
+        raise RuntimeError('device-pair public URL must be an https URL without a path')
+    gateway = {'mode': 'local', 'bind': 'loopback', 'port': int(port),
+               'trustedProxies': ['127.0.0.1', '::1'],
+               'auth': {'mode': 'token', 'token': {'source': 'env', 'provider': 'ncp_env', 'id': 'OPENCLAW_GATEWAY_TOKEN'}}}
+    # Keep these role-owned keys in the patch even when disabled so a later
+    # readiness rollback removes Serve and the pairing URL deterministically.
+    gateway['tailscale'] = {'mode': 'serve'} if tailscale_ready else None
+    result = {'gateway': gateway,
             'secrets': {'providers': {'ncp_env': {'source': 'env', 'allowlist': ['OPENCLAW_GATEWAY_TOKEN']}}},
             'agents': {
                 'defaults': {
@@ -94,6 +101,8 @@ def desired(workspace, port):
                     'reviewer': {'model': 'openai/gpt-5.6-terra'},
                 },
             }}
+    result['plugins'] = {'entries': {'device-pair': {'config': {'publicUrl': public_url or None}}}}
+    return result
 
 
 def contains(current, patch):
@@ -126,9 +135,9 @@ def config_read():
     return json.loads(run(['node', '-e', script, shutil.which('openclaw')]).stdout)
 
 
-def ensure_config(workspace, port):
+def ensure_config(workspace, port, public_url, tailscale_ready=False):
     current = config_read()
-    patch = desired(workspace, port)
+    patch = desired(workspace, port, public_url, tailscale_ready)
     provider = current.get('secrets', {}).get('providers', {}).get('ncp_env')
     if provider is not None and provider != patch['secrets']['providers']['ncp_env']:
         raise RuntimeError('reserved ncp_env provider conflict')
@@ -181,9 +190,9 @@ def listeners_ok(text, port):
     return bool(addresses) and all(a in ('127.0.0.1', '[::1]', '::1') for a in addresses)
 
 
-def verify(workspace, port, node_root):
+def verify(workspace, port, node_root, public_url, tailscale_ready=False):
     verify_versions(node_root)
-    if not config_matches(config_read(), desired(workspace, port)) or not Path(workspace).is_dir():
+    if not config_matches(config_read(), desired(workspace, port, public_url, tailscale_ready)) or not Path(workspace).is_dir():
         raise RuntimeError('config/workspace mismatch')
     run(['openclaw', 'config', 'validate'])
     run(['systemctl', '--user', 'is-active', '--quiet', 'openclaw-gateway.service'])
@@ -217,7 +226,8 @@ def service(port, node_root):
 
 
 def main():
-    action, env_file, workspace, port, node_root = sys.argv[1:]
+    action, env_file, workspace, port, node_root, public_url, tailscale_ready = sys.argv[1:]
+    tailscale_ready = tailscale_ready == '1'
     changed = False
     if action == 'prepare':
         changed = ensure_token(env_file, os.environ.pop('NCP_SUPPLIED_TOKEN', ''), os.environ.pop('NCP_ROTATE_TOKEN', '0') == '1')
@@ -229,7 +239,7 @@ def main():
         package_changed = versions(node_root)
         if package_changed:
             atomic(pending, 'pending')
-        config_changed = ensure_config(workspace, port)
+        config_changed = ensure_config(workspace, port, public_url, tailscale_ready)
         if config_changed:
             atomic(pending, 'pending')
         changed = package_changed or config_changed or changed
@@ -238,7 +248,7 @@ def main():
             changed = service(port, node_root)
         for attempt in range(12):
             try:
-                verify(workspace, port, node_root)
+                verify(workspace, port, node_root, public_url, tailscale_ready)
                 if action == 'service':
                     (Path.home() / '.config/openclaw/restart-pending').unlink(missing_ok=True)
                 break

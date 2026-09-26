@@ -99,6 +99,19 @@ JSON only for success/model identity and redact any content before sharing it.
   NCP login key is for initial account recovery; it does not automatically install
   an authorized key for dev. Verification intentionally reuses bootstrap SSH + become.
 
+### Tailscale access path
+
+The role installs and enables `tailscaled`, but tailnet authentication and device
+approval remain operator actions. The Gateway stays `local`/`loopback` on
+`127.0.0.1:18789`; NCP ACG/NACL rules must not open TCP/18789. When the
+tailnet is ready, the converger enables OpenClaw's managed Tailscale Serve mode,
+which provides HTTPS on the tailnet and forwards to the loopback Gateway. It
+does not use Funnel or bind the Gateway to a LAN address.
+
+The environment-specific device-pair URL is supplied as the inventory variable
+`openclaw_device_pair_public_url` (the host's MagicDNS HTTPS URL). Do not commit
+the real hostname or any auth material.
+
 ## Terraform (from repository root)
 
 Set NCP credentials using your approved local secret mechanism, not committed tfvars.
@@ -144,6 +157,37 @@ cd ..
 verify.sh resolves relative inventory paths from ansible/. An absolute inventory
 path also works. Set ANSIBLE_PLAYBOOK to the absolute local .venv/bin/ansible-playbook
 if not on PATH. Both playbooks require trusted SSH host keys. Do not disable checking.
+
+For a host that has not joined the tailnet, leave `openclaw_tailscale_ready: false`
+and omit the public URL on the first run. Then complete the authenticated boundary
+manually over trusted bootstrap SSH:
+
+```bash
+sudo tailscale up
+sudo tailscale status
+```
+
+Approve the device and its tags/ACLs in the tailnet administration workflow.
+Set these host-specific values in the uncommitted inventory (or an approved
+configuration mechanism), then rerun the playbook and verifier:
+
+```yaml
+openclaw_tailscale_ready: true
+openclaw_device_pair_public_url: https://HOST.TAILNET.example
+```
+
+OpenClaw then manages `gateway.tailscale.mode: serve` to
+`http://127.0.0.1:18789`. Do not run Funnel or expose 18789 in NCP networking.
+The setup-code pairing is also a manual, short-lived approval step:
+
+```bash
+openclaw qr --setup-code-only
+```
+
+Use the code in the iOS app, approve the pending OpenClaw device through the
+normal device workflow, and confirm the app's WSS connection. Setup codes,
+device credentials, and Tailscale auth keys must not be copied into inventory,
+logs, Terraform state, or Git.
 
 ## Rerun and secrets lifecycle
 

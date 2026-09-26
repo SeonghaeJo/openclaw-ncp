@@ -4,3 +4,7 @@ all:
       ansible_host: SERVER_IP
       ansible_user: root
       # ansible_ssh_private_key_file: ~/.ssh/ncp-key.pem
+      # Set per host after Tailscale login; do not commit the real tailnet URL.
+      # openclaw_device_pair_public_url: https://HOST.TAILNET.example
+      # Set true only after `sudo tailscale up` and tailnet approval.
+      # openclaw_tailscale_ready: false

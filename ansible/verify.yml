@@ -22,6 +22,6 @@
         XDG_RUNTIME_DIR: '/run/user/{{ uid.stdout }}'
         DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/{{ uid.stdout }}/bus'
       ansible.builtin.command:
-        argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', verify, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}']
+        argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', verify, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}', '{{ openclaw_device_pair_public_url }}', '{{ openclaw_tailscale_ready | ternary("1", "0") }}']
       changed_when: false
       no_log: true

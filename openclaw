@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Safe lifecycle entrypoint for disposable OpenClaw NCP hosts.
+
+This command owns local metadata and approvals. It never puts credentials in
+Terraform variables, argv, Git, or normal output. `up`/`down` still require an
+explicit confirmation immediately before a billable/destructive operation.
+"""
+from __future__ import annotations
+import argparse, datetime as dt, getpass, json, os, secrets, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+TF = ROOT / "terraform"
+DISCOVERY = ROOT / "terraform-discovery"
+
+def die(msg):
+    print("openclaw: " + msg, file=sys.stderr); raise SystemExit(2)
+
+def now(): return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+def dirs():
+    config = Path(os.environ.get("OPENCLAW_NCP_CONFIG_DIR", Path.home()/".config/openclaw-ncp"))
+    data = Path(os.environ.get("OPENCLAW_NCP_DATA_DIR", Path.home()/".local/share/openclaw-ncp"))
+    config.mkdir(mode=0o700, parents=True, exist_ok=True); data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return config, data
+
+def read_profile():
+    config, _ = dirs(); p = config / "installation.json"
+    if not p.exists(): return {}, p
+    try: return json.loads(p.read_text()), p
+    except Exception: die("installation metadata is invalid; restore a protected backup before continuing")
+
+def write_json(path, value):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f: json.dump(value, f, indent=2, sort_keys=True); f.write("\n"); f.flush(); os.fsync(f.fileno())
+        os.chmod(tmp, 0o600); os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+
+def secret_tool(args, value=None):
+    if shutil.which("secret-tool"):
+        cmd = ["secret-tool"] + args
+        p = subprocess.run(cmd, input=(value+"\n") if value is not None else None, text=True, capture_output=True)
+        if p.returncode == 0: return p.stdout.rstrip("\n")
+    die("an OS credential store is required (install secret-tool/libsecret); refusing plaintext credential fallback")
+
+def secret_get(account):
+    if not shutil.which("secret-tool"): die("an OS credential store is required (install secret-tool/libsecret); refusing plaintext credential fallback")
+    p = subprocess.run(["secret-tool", "lookup", "service", "openclaw-ncp", "account", account], text=True, capture_output=True)
+    if p.returncode == 0: return p.stdout.rstrip("\n")
+    if p.returncode == 1: return ""
+    die("OS credential store lookup failed")
+
+def secret_put(account, value):
+    secret_tool(["store", "--label", "OpenClaw NCP credential", "service", "openclaw-ncp", "account", account], value)
+
+def credentials(profile):
+    account = profile.get("name", "default")
+    access = secret_get(account + ":ncp-access")
+    secret = secret_get(account + ":ncp-secret")
+    if not access:
+        access = getpass.getpass("NCP access key (hidden): "); secret_put(account + ":ncp-access", access)
+    if not secret:
+        secret = getpass.getpass("NCP secret key (hidden): "); secret_put(account + ":ncp-secret", secret)
+    if not access or not secret: die("NCP credentials are required")
+    return {"NCP_ACCESS_KEY": access, "NCP_SECRET_KEY": secret}
+
+def gateway_token(profile):
+    account = profile.get("name", "default") + ":gateway-token"
+    token = secret_get(account)
+    if not token:
+        token = secrets.token_urlsafe(48); secret_put(account, token)
+    return token
+
+def run(cmd, env=None, cwd=None, check=True, quiet=False):
+    e = os.environ.copy(); e.update(env or {})
+    p = subprocess.run(cmd, cwd=cwd, env=e, text=True, capture_output=True)
+    if check and p.returncode:
+        if not quiet and p.stderr:
+            safe = p.stderr
+            for value in e.values():
+                if value and len(value) >= 8: safe = safe.replace(value, "[REDACTED]")
+            print(safe, file=sys.stderr)
+        die("command failed: " + " ".join(cmd[:2]))
+    return p
+
+def terraform_bin():
+    return os.environ.get("TERRAFORM") or shutil.which("terraform") or str(ROOT/".tools/terraform")
+
+def resolve_runtime(profile):
+    if profile.get("runtime", {}).get("openclaw_version") and profile.get("runtime", {}).get("node_version"):
+        return profile["runtime"]
+    helper = ROOT / "ansible/roles/openclaw/files/resolve_runtime.py"
+    p = run([sys.executable, str(helper)], quiet=True)
+    try: runtime = json.loads(p.stdout)
+    except Exception: die("runtime resolver returned invalid metadata")
+    profile["runtime"] = {"openclaw_version":runtime["openclaw_version"], "openclaw_tarball":runtime.get("openclaw_tarball",""), "openclaw_integrity":runtime.get("openclaw_integrity",""), "node_version":runtime["node_version"], "node_sha256":runtime.get("node_sha256", ""), "resolved_at":now()}
+    return profile["runtime"]
+
+def confirm(word, prompt):
+    print(prompt); return input("Type " + word + " to continue: ").strip() == word
+
+def discover(profile, creds):
+    print("Discovering existing GEN subnets read-only; no resource mutation will occur.")
+    terraform = terraform_bin()
+    run([terraform, "init", "-backend=false", "-input=false"], cwd=DISCOVERY, env=creds, quiet=True)
+    run([terraform, "apply", "-refresh-only", "-auto-approve", "-input=false"], cwd=DISCOVERY, env=creds, quiet=True)
+    values = run([terraform, "output", "-json"], cwd=DISCOVERY, env=creds, quiet=True)
+    try: data = json.loads(values.stdout)
+    except Exception: die("NCP discovery returned no safe candidate list")
+    candidates = data.get("subnets", {}).get("value", [])
+    ssh_cidr = input("Verified operator SSH source IPv4 /32 (required for bootstrap): ").strip()
+    import ipaddress
+    try:
+        if ipaddress.ip_network(ssh_cidr, strict=False).prefixlen != 32: raise ValueError
+    except ValueError: die("bootstrap SSH source must be a verified IPv4 /32; private access paths need a separate profile")
+    if not candidates:
+        print("No reusable GEN subnet was returned; a dedicated PUBLIC network with only this /32 SSH source will be proposed.")
+        return {"mode":"create", "vpc_mode":"create", "subnet_mode":"create", "vpc_cidr":"10.42.0.0/16", "subnet_cidr":"10.42.1.0/24", "zone":"KR-2", "subnet_type":"PUBLIC", "ssh_source_cidrs":[ssh_cidr], "ownership":"created"}
+    print("Reusable candidates (none is selected automatically):")
+    for i, c in enumerate(candidates): print(f"  [{i}] subnet={c['id']} vpc={c['vpc_id']} {c['name']} {c['cidr']} {c['zone']} {c['type']}")
+    raw = input("Select a candidate number, or press Enter to create a dedicated network: ").strip()
+    if raw == "": return {"mode":"create", "vpc_mode":"create", "subnet_mode":"create", "vpc_cidr":"10.42.0.0/16", "subnet_cidr":"10.42.1.0/24", "zone":"KR-2", "subnet_type":"PUBLIC", "ssh_source_cidrs":[ssh_cidr], "ownership":"created"}
+    try: c = candidates[int(raw)]
+    except (ValueError, IndexError): die("invalid network selection")
+    if c["type"] != "PUBLIC": die("selected subnet is private; configure an approved private SSH path instead of guessing a route")
+    if not confirm("REUSE", f"Use subnet {c['id']} in VPC {c['vpc_id']}? Existing network resources will never be destroyed by down."): die("network selection cancelled")
+    return {"mode":"reuse", "vpc_mode":"reuse", "subnet_mode":"reuse", "vpc_no":c["vpc_id"], "subnet_no":c["id"], "ssh_source_cidrs":[ssh_cidr], "ownership":"reused"}
+
+def tfvars(profile, destroying=False):
+    n = profile["network"]
+    values = {"name": profile.get("name", "openclaw"), "login_key_name": profile["login_key_name"], "hypervisor":"KVM", "allocate_public_ip":True,
+              "vpc_mode":n["vpc_mode"], "subnet_mode":n["subnet_mode"], "subnet_type":n.get("subnet_type","PUBLIC"), "ssh_source_cidrs":n.get("ssh_source_cidrs",[]),
+              "server_image_number": profile.get("server_image_number"), "server_spec_code": profile.get("server_spec_code"), "ubuntu_release": profile.get("ubuntu_release","24.04")}
+    values.update({k:n[k] for k in ("vpc_no","subnet_no","vpc_cidr","subnet_cidr","zone") if k in n})
+    return "\n".join(f'{k} = {json.dumps(v)}' for k,v in values.items() if v is not None) + "\n"
+
+def inventory(profile, host):
+    config, _ = dirs(); p = config / "inventory.yml"
+    kh = profile["known_hosts_file"]
+    content = "all:\n  hosts:\n    openclaw:\n      ansible_host: %s\n      ansible_user: %s\n      ansible_ssh_private_key_file: %s\n      ansible_ssh_common_args: '-o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes'\n" % (host, profile["ssh_user"], profile["ssh_private_key"], kh)
+    write_json(p.with_suffix(".json"), {"path":str(p), "host":host})
+    fd, tmp = tempfile.mkstemp(prefix="inventory-", dir=config); os.close(fd); Path(tmp).write_text(content); os.chmod(tmp,0o600); os.replace(tmp,p)
+    return p
+
+def up(args):
+    profile, pp = read_profile(); profile.setdefault("name", args.name)
+    creds = credentials(profile); gateway_token(profile)
+    runtime = resolve_runtime(profile)
+    if "network" not in profile: profile["network"] = discover(profile, creds)
+    if "login_key_name" not in profile: profile["login_key_name"] = input("NCP login key name: ").strip()
+    if "ssh_user" not in profile: profile["ssh_user"] = input("Bootstrap SSH username: ").strip()
+    if "ssh_private_key" not in profile: profile["ssh_private_key"] = input("Bootstrap SSH private-key path: ").strip()
+    if "known_hosts_file" not in profile: profile["known_hosts_file"] = input("Pre-trusted SSH known_hosts file path: ").strip()
+    if not Path(profile["known_hosts_file"]).is_file(): die("pre-trusted known_hosts file is required; verify the NCP host fingerprint out of band first")
+    write_json(pp, profile)
+    config, _ = dirs(); tf = config / "terraform.tfvars"; plan = config / "reviewed.tfplan"; tf.write_text(tfvars(profile)); os.chmod(tf,0o600)
+    env = {**creds}; terraform = terraform_bin()
+    run([terraform,"init","-backend=false","-input=false"], cwd=TF, env=env, quiet=True)
+    run([terraform,"plan","-input=false","-var-file",str(tf),"-out",str(plan)], cwd=TF, env=env)
+    print(run([terraform,"show","-no-color",str(plan)], cwd=TF, env=env).stdout)
+    print("Plan saved in the protected local profile directory.")
+    if not args.approve or not confirm("APPLY", "The reviewed plan may create billable NCP resources."): die("plan complete; apply requires explicit approval")
+    run([terraform,"apply","-input=false",str(plan)], cwd=TF, env=env)
+    ip = run([terraform,"output","-raw","public_ip"], cwd=TF, env=env).stdout.strip()
+    if not ip: die("no public IP was returned; configure an approved private SSH path before Ansible")
+    inv = inventory(profile, ip); profile["host"] = ip; profile["lifecycle"] = {"state":"provisioned","updated_at":now()}; write_json(pp,profile)
+    ansible = os.environ.get("ANSIBLE_PLAYBOOK","ansible-playbook")
+    run([ansible,"-i",str(inv),str(ROOT/"ansible/playbook.yml"),"-e","openclaw_new_host_ack=true", "-e", "openclaw_version="+runtime["openclaw_version"], "-e", "openclaw_artifact_url="+runtime.get("openclaw_tarball",""), "-e", "openclaw_artifact_integrity="+runtime.get("openclaw_integrity",""), "-e", "node_version="+runtime["node_version"], "-e", "node_sha256="+runtime["node_sha256"]], env={**creds,"OPENCLAW_GATEWAY_TOKEN":gateway_token(profile)}, cwd=ROOT)
+    restore(profile)
+    profile["lifecycle"] = {"state":"verified","updated_at":now()}; write_json(pp,profile); print("OpenClaw VM is provisioned and verified; status is read-only.")
+
+def status(_):
+    profile, _ = read_profile()
+    if not profile: print("No installation profile; VM is absent or has not been initialized."); return
+    print(json.dumps({"name":profile.get("name"),"host":profile.get("host"),"network_ownership":profile.get("network",{}).get("ownership"),"lifecycle":profile.get("lifecycle"),"backup":profile.get("backup"),"recorded_runtime":profile.get("runtime")}, indent=2))
+
+def backup(profile):
+    if not profile.get("host"): die("host identity is missing")
+    _, data = dirs(); b = data / "backups" / dt.datetime.now().strftime("%Y%m%dT%H%M%SZ"); b.mkdir(mode=0o700, parents=True)
+    target = f"{profile['ssh_user']}@{profile['host']}"; key = profile["ssh_private_key"]; home = profile.get("remote_home", "/home/"+profile["ssh_user"])
+    archive = b / "workspace.tar.gz"
+    cmd=["ssh","-o","UserKnownHostsFile="+profile["known_hosts_file"],"-o","StrictHostKeyChecking=yes","-o","BatchMode=yes","-i",key,target,"tar","--ignore-failed-read","-C",home,"--exclude=.openclaw/state","--exclude=.openclaw/agents","--exclude=*auth*","--exclude=*credential*","--exclude=*device*","--exclude=*.env","--exclude=*.pem","--exclude=*.key","--exclude=*.sqlite*","-czf","-","workspace",".openclaw/workspace"]
+    with archive.open("wb") as f:
+        p=subprocess.run(cmd,stdout=f,stderr=subprocess.PIPE)
+    if p.returncode: die("safe workspace backup failed; destroy was not attempted")
+    listing = subprocess.run(["tar","-tzf",str(archive)],text=True,capture_output=True)
+    forbidden = (".env", ".pem", ".key", ".sqlite", "auth", "credential", "secret", "token", "device")
+    if listing.returncode or any(any(x in line.lower() for x in forbidden) for line in listing.stdout.splitlines()): die("backup manifest contains a forbidden credential/state path; destroy was not attempted")
+    return b
+
+def restore(profile):
+    archive = Path(profile.get("backup", {}).get("path", "")) / "workspace.tar.gz"
+    if not archive.exists(): return
+    target = f"{profile['ssh_user']}@{profile['host']}"; home = profile.get("remote_home", "/home/"+profile["ssh_user"])
+    cmd=["ssh","-o","UserKnownHostsFile="+profile["known_hosts_file"],"-o","StrictHostKeyChecking=yes","-o","BatchMode=yes","-i",profile["ssh_private_key"],target,"tar","--no-same-owner","-C",home,"-xzf","-"]
+    with archive.open("rb") as source: p=subprocess.run(cmd, stdin=source, stderr=subprocess.PIPE)
+    if p.returncode: die("safe workspace restore failed; VM remains available for inspection")
+
+def down(args):
+    profile, pp = read_profile()
+    if not profile: die("no installation profile")
+    token = gateway_token(profile)
+    b = backup(profile); profile["backup"]={"path":str(b),"created_at":now(),"scope":"workspace-only; auth/device state intentionally excluded"}; write_json(pp,profile)
+    creds=credentials(profile); config,_=dirs(); tf=config/"terraform.tfvars"; tf.write_text(tfvars(profile,True)); os.chmod(tf,0o600); terraform=terraform_bin()
+    plan = config / "destroy.tfplan"
+    destroy_targets=["-target=ncloud_public_ip.openclaw","-target=ncloud_network_interface.primary","-target=ncloud_server.openclaw"]
+    run([terraform,"plan","-destroy","-input=false","-var-file",str(tf),*destroy_targets,"-out",str(plan)],cwd=TF,env=creds)
+    print(run([terraform,"show","-no-color",str(plan)],cwd=TF,env=creds).stdout)
+    if not args.approve or not confirm("DESTROY","The displayed destroy plan will release the VM/public IP; reused VPC/subnet are protected."): die("destroy plan complete; no resources were deleted")
+    # Deliberately target only disposable compute. Created VPC/subnet/ACG stay
+    # owned by this profile for safe reuse; no network is guessed or deleted.
+    # Apply the exact reviewed artifact; do not re-plan after approval.
+    run([terraform,"apply","-input=false","-auto-approve",str(plan)],cwd=TF,env=creds)
+    profile["host"] = None; profile["lifecycle"]={"state":"absent","updated_at":now()}; write_json(pp,profile); print("VM resources released; persistent profile, token and backup retained.")
+
+def upgrade(args):
+    profile, pp = read_profile()
+    if not profile or not profile.get("host"): die("no live installation")
+    print(json.dumps({"action":"upgrade","target":args.to,"host":profile["host"],"backup_required":True,"pairing":"not copied; re-pair only if the device identity changes"},indent=2))
+    if not args.approve or not confirm("UPGRADE", "Upgrade requires an approved release and a maintenance window."): die("upgrade plan complete; no changes made")
+    backup_dir = backup(profile); profile["backup"]={"path":str(backup_dir),"created_at":now(),"scope":"workspace-only; auth/device state intentionally excluded"}; write_json(pp,profile)
+    runtime = json.loads(run([sys.executable, str(ROOT/"ansible/roles/openclaw/files/resolve_runtime.py"), args.to], quiet=True).stdout)
+    inv=dirs()[0]/"inventory.yml"; run([os.environ.get("ANSIBLE_PLAYBOOK","ansible-playbook"),"-i",str(inv),str(ROOT/"ansible/playbook.yml"),"-e","openclaw_new_host_ack=true", "-e", "openclaw_version="+runtime["openclaw_version"], "-e", "openclaw_artifact_url="+runtime["openclaw_tarball"], "-e", "openclaw_artifact_integrity="+runtime["openclaw_integrity"], "-e", "node_version="+runtime["node_version"], "-e", "node_sha256="+runtime["node_sha256"]], cwd=ROOT)
+    profile["runtime"]={"openclaw_version":runtime["openclaw_version"],"openclaw_tarball":runtime["openclaw_tarball"],"openclaw_integrity":runtime["openclaw_integrity"],"node_version":runtime["node_version"],"node_sha256":runtime["node_sha256"],"resolved_at":now()}; write_json(pp,profile)
+
+def main():
+    ap=argparse.ArgumentParser(); sp=ap.add_subparsers(dest="command",required=True)
+    u=sp.add_parser("up"); u.add_argument("--name",default="openclaw"); u.add_argument("--approve",action="store_true"); u.set_defaults(fn=up)
+    s=sp.add_parser("status"); s.set_defaults(fn=status)
+    d=sp.add_parser("down"); d.add_argument("--approve",action="store_true"); d.set_defaults(fn=down)
+    g=sp.add_parser("upgrade"); g.add_argument("--to",required=True); g.add_argument("--approve",action="store_true"); g.set_defaults(fn=upgrade)
+    args=ap.parse_args(); args.fn(args)
+if __name__ == "__main__": main()

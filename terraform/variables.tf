@@ -33,9 +33,23 @@ variable "server_image_number" {
   type    = string
   default = null
 }
+variable "ubuntu_release" {
+  description = "Ubuntu LTS release selector used when server_image_number is omitted."
+  type        = string
+  default     = "24.04"
+  validation {
+    condition     = can(regex("^[0-9]{2}\\.[04]4$", var.ubuntu_release))
+    error_message = "ubuntu_release must be an Ubuntu LTS release such as 22.04 or 24.04."
+  }
+}
 variable "server_spec_code" {
   type    = string
   default = null
+}
+variable "server_spec_min_memory_gb" {
+  description = "Minimum memory for automatic x86_64/KVM spec selection."
+  type        = number
+  default     = 4
 }
 variable "server_image_product_code" {
   type    = string

@@ -1,8 +1,66 @@
-# OpenClaw on NCP — reviewed baseline
+# OpenClaw on NCP — disposable lifecycle
 
-A **new-host reproduction baseline**, not an upgrader for the running origin host.
-Human approval is required for deployment/resource creation. No VM deployment or
-Terraform apply was performed during this review; production readiness is not proven.
+A disposable NCP VM lifecycle around the existing Terraform/Ansible baseline.
+The VM is an execution cache: local metadata, the OS credential store and a
+protected workspace backup are the durable boundary. Human approval is required
+before NCP resource creation, upgrade, or destruction. Repository validation does
+not perform VM deployment, apply, or destroy.
+
+## Normal lifecycle
+
+Use the root command rather than entering Terraform/Ansible details on every run:
+
+```bash
+./openclaw up --approve       # after reviewing the displayed plan; also types APPLY
+./openclaw status
+./openclaw down --approve     # after reviewing the displayed compute-only plan; also types DESTROY
+./openclaw up                 # restore/recreate path
+./openclaw upgrade --to 2026.9.6 --approve
+```
+
+The command stores only non-secret installation metadata in
+`~/.config/openclaw-ncp/installation.json`, and stores NCP credentials plus the
+cryptographically random Gateway token in the OS credential store
+(`secret-tool`/libsecret on Linux). It refuses a plaintext fallback. The token is
+reused after VM recreation and is not rotated by `up`; rotation is a separate
+explicit workflow.
+
+When no profile exists, `up` performs read-only NCP discovery, displays reusable
+GEN subnet candidates, and requires `REUSE` before adopting one. Pressing Enter
+proposes a dedicated **public** VPC/subnet with only the verified operator
+`/32` SSH ingress needed for bootstrap; the current lifecycle path requires a
+public IP to reach the host. Private-subnet deployment requires a separately
+approved private access profile and is rejected rather than guessed. Ownership
+is recorded as `reused` or `created`; `down` never destroys VPC/subnet resources. `up` writes a
+protected Terraform plan, displays it, and requires `APPLY` before billable
+creation. No credentials enter tfvars, argv, logs, Git, or Terraform state.
+
+`down` first checks the persistent token and creates a protected, validated
+workspace backup;
+it intentionally excludes OpenClaw auth SQLite databases, device tokens, pairing
+databases, Tailscale state, and credential files. It then displays the destroy
+compute-only destroy plan and requires `DESTROY`. Dedicated VPC/subnet/ACG
+resources are deliberately retained under the installation profile for safe
+reuse; only the VM/NIC/public IP are returned automatically. The next `up` recreates the VM, reapplies the safe
+workspace, re-converges OpenClaw, installs/enables Tailscale without placing an
+auth key in automation, and runs health checks. Tailscale enrollment, ACL/tag
+approval and Serve enablement remain explicit human gates because auth-key
+lifecycle cannot safely be inferred. OpenClaw 2026.9.x auth and pairing state are SQLite-backed and must
+not be copied blindly across a new VM identity; if needed, pair once with:
+
+```bash
+./scripts/pair-app.sh
+```
+
+The short-lived code, Tailscale ACL/device approval, and iOS approval remain human
+gates. Gateway access remains loopback-only on port 18789 behind Tailscale Serve.
+Before the first plan, provide a pre-trusted `known_hosts` file built from an
+out-of-band NCP console/fingerprint check; the wrapper passes that file to both
+Ansible and backup/restore SSH. A public bootstrap subnet is used only with the
+operator's verified `/32` SSH source; port 18789 is never opened.
+First install resolves a current supported OpenClaw stable/Node LTS pair and
+records it; recreation reuses the recorded pair when available. `upgrade` is the
+separate reviewed path for changing that release.
 
 ## Reproduction scope
 
@@ -10,8 +68,9 @@ Ubuntu 24.04 x86_64, Node **24.21.0**, npm **11.19.0**, OpenClaw **2026.9.6**,
 user-owned systemd Gateway, linger, local/loopback/token authentication on 18789.
 Defaults: user dev; shell/project directory /home/dev/workspace; independent agent
 workspace /home/dev/.openclaw/workspace. Home and workspace values are configurable.
-Changing pinned runtime versions requires reviewing checksums, CLI behavior and tests;
-role assertions deliberately reject unreviewed version overrides.
+The deterministic baseline remains available for offline tests; lifecycle first
+install resolves a supported pair and records it, while explicit overrides remain
+reviewable inputs.
 
 This reproduces the baseline, not a disk image: Ubuntu patch levels/apt packages,
 npm transitive dependency ranges/native optional builds and NCP image availability
@@ -88,8 +147,9 @@ JSON only for success/model identity and redact any content before sharing it.
   dependencies; outbound HTTPS/DNS to Node, npm, Ubuntu and package build sources.
 * Controller: Python 3.12, Ansible-core 2.19.3, Terraform 1.9.8 (validated versions).
   Repository-local validation installations live in ignored .venv/.tools.
-* NCP networking: explicitly reuse VPC/subnet IDs or create new networks; see
-  [network modes, security and state migration](docs/networking.md). Compatible
+* NCP networking: `./openclaw up` discovers exact provider resources read-only and
+  asks before reuse; otherwise it proposes a dedicated network. See [network
+  modes, security and state migration](docs/networking.md). Compatible
   zone/image/spec, existing login key and approved SSH/egress paths are required.
   Fresh defaults are private with no SSH ingress; no NAT is created implicitly.
   Review ACG and NACL rules and routes. Never open 18789 publicly.

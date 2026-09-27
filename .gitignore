@@ -1,6 +1,9 @@
 terraform/.terraform/
 terraform/*.tfstate*
 terraform/*.tfplan
+terraform-discovery/.terraform/
+terraform-discovery/*.tfstate*
+terraform-discovery/*.tfplan
 terraform/terraform.tfvars
 ansible/inventory.yml
 .env

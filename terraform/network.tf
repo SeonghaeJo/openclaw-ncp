@@ -60,7 +60,9 @@ resource "ncloud_vpc" "managed" {
   count           = var.vpc_mode == "create" ? 1 : 0
   name            = "${var.name}-vpc"
   ipv4_cidr_block = var.vpc_cidr
-  lifecycle { prevent_destroy = true }
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 resource "ncloud_subnet" "managed" {
   count          = var.subnet_mode == "create" ? 1 : 0
@@ -71,7 +73,9 @@ resource "ncloud_subnet" "managed" {
   network_acl_no = local.network_acl_no
   subnet_type    = var.subnet_type
   usage_type     = "GEN"
-  lifecycle { prevent_destroy = true }
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 data "ncloud_access_control_group" "existing" {
   for_each = toset(var.access_control_group_no_list)
@@ -87,7 +91,9 @@ resource "ncloud_access_control_group" "managed" {
   count  = length(var.access_control_group_no_list) == 0 ? 1 : 0
   name   = "${var.name}-acg"
   vpc_no = local.vpc_no
-  lifecycle { prevent_destroy = true }
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 resource "ncloud_access_control_group_rule" "managed" {
   count                   = length(var.access_control_group_no_list) == 0 ? 1 : 0

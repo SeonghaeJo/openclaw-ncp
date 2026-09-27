@@ -1,10 +1,43 @@
 ---
+- name: Install CA certificates before runtime resolution
+  ansible.builtin.apt:
+    name: ca-certificates
+    state: present
+    update_cache: true
+
+- name: Resolve current supported runtime when no installation profile exists
+  ansible.builtin.copy:
+    src: resolve_runtime.py
+    dest: /tmp/openclaw-ncp-resolve-runtime.py
+    mode: '0700'
+  when: openclaw_version == 'auto' or node_version == 'auto'
+
+- name: Query current OpenClaw stable and compatible Node LTS
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /tmp/openclaw-ncp-resolve-runtime.py]
+  register: runtime_resolution
+  changed_when: false
+  when: openclaw_version == 'auto' or node_version == 'auto'
+
+- name: Select resolved runtime
+  ansible.builtin.set_fact:
+    openclaw_version: "{{ (runtime_resolution.stdout | from_json).openclaw_version if openclaw_version == 'auto' else openclaw_version }}"
+    node_version: "{{ (runtime_resolution.stdout | from_json).node_version if node_version == 'auto' else node_version }}"
+    node_sha256: "{{ (runtime_resolution.stdout | from_json).node_sha256 if node_sha256 == 'auto' else node_sha256 }}"
+    openclaw_artifact_url: "{{ (runtime_resolution.stdout | from_json).openclaw_tarball if openclaw_artifact_url == 'auto' else openclaw_artifact_url }}"
+    openclaw_artifact_integrity: "{{ (runtime_resolution.stdout | from_json).openclaw_integrity if openclaw_artifact_integrity == 'auto' else openclaw_artifact_integrity }}"
+  when: runtime_resolution is defined and runtime_resolution.stdout | length > 0
+
+- name: Recompute resolved Node path
+  ansible.builtin.set_fact:
+    node_root: "/opt/node-v{{ node_version }}-linux-x64"
+
 - name: Enforce supported scope before mutation
   ansible.builtin.assert:
     that:
       - openclaw_new_host_ack | bool
       - ansible_distribution == 'Ubuntu'
-      - ansible_distribution_version == '24.04'
+      - ansible_distribution_version is version('24.04', '>=')
       - ansible_architecture == 'x86_64'
       - openclaw_gateway_mode == 'local'
       - openclaw_gateway_bind == 'loopback'
@@ -21,18 +54,10 @@
       - tailscale_package_state == 'present'
       - tailscale_package_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
       - tailscale_keyring_checksum is match('^sha256:[0-9a-f]{64}$')
-      - node_root == '/opt/node-v24.21.0-linux-x64'
-      - node_sha256 == 'fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6'
-      - node_version == '24.21.0'
-      - npm_version == '11.19.0'
-      - openclaw_version == '2026.9.6'
-    fail_msg: 'Only acknowledged NEW Ubuntu 24.04 x86_64 hosts and pinned local/loopback/token baseline are supported.'
-
-- name: Install CA certificates before HTTPS bootstrap
-  ansible.builtin.apt:
-    name: ca-certificates
-    state: present
-    update_cache: true
+      - node_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - openclaw_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - node_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: 'Only acknowledged NEW Ubuntu x86_64 hosts and local/loopback/token baseline are supported.'
 
 - name: Install Tailscale repository keyring
   ansible.builtin.get_url:
@@ -161,6 +186,11 @@
     OPENCLAW_STATE_DIR: "{{ openclaw_home }}/.openclaw"
     NCP_SUPPLIED_TOKEN: "{{ openclaw_gateway_token }}"
     NCP_ROTATE_TOKEN: "{{ openclaw_rotate_token | bool | ternary('1', '0') }}"
+    NCP_OPENCLAW_VERSION: "{{ openclaw_version }}"
+    NCP_NODE_VERSION: "{{ node_version }}"
+    NCP_NPM_VERSION: "{{ npm_version if npm_version != 'auto' else '' }}"
+    NCP_OPENCLAW_URL: "{{ openclaw_artifact_url }}"
+    NCP_OPENCLAW_INTEGRITY: "{{ openclaw_artifact_integrity }}"
   ansible.builtin.command:
     argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', prepare, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}', '{{ openclaw_device_pair_public_url }}', '{{ openclaw_tailscale_ready | ternary("1", "0") }}']
   register: prepared
@@ -216,8 +246,20 @@
     XDG_RUNTIME_DIR: "/run/user/{{ openclaw_uid.stdout }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ openclaw_uid.stdout }}/bus"
     NCP_RESTART: "{{ (prepared.changed or env_dropin.changed) | ternary('1', '0') }}"
+    NCP_OPENCLAW_VERSION: "{{ openclaw_version }}"
+    NCP_NODE_VERSION: "{{ node_version }}"
+    NCP_NPM_VERSION: "{{ npm_version if npm_version != 'auto' else '' }}"
+    NCP_OPENCLAW_URL: "{{ openclaw_artifact_url }}"
+    NCP_OPENCLAW_INTEGRITY: "{{ openclaw_artifact_integrity }}"
   ansible.builtin.command:
     argv: [/usr/bin/python3, '{{ openclaw_home }}/.local/lib/openclaw-ncp/converge.py', service, '{{ openclaw_gateway_env_file }}', '{{ openclaw_agent_workspace }}', '{{ openclaw_gateway_port | string }}', '{{ node_root }}', '{{ openclaw_device_pair_public_url }}', '{{ openclaw_tailscale_ready | ternary("1", "0") }}']
   register: serviced
   changed_when: "'CHANGED' in serviced.stdout"
   no_log: true
+
+- name: Persist non-secret installation metadata
+  become_user: "{{ openclaw_user }}"
+  ansible.builtin.copy:
+    dest: "{{ openclaw_home }}/.config/openclaw/lifecycle.json"
+    mode: '0600'
+    content: "{{ {'schema': 1, 'openclaw_version': openclaw_version, 'node_version': node_version, 'node_root': node_root, 'gateway_port': (openclaw_gateway_port | int), 'tailscale_ready': (openclaw_tailscale_ready | bool), 'updated_at': ansible_date_time.iso8601} | to_nice_json }}\n"

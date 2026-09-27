@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pinned new-host convergence. Never print credentials or raw CLI output."""
 import json
+import base64
 import hashlib
 import urllib.request
 import os
@@ -153,34 +154,55 @@ def ensure_config(workspace, port, public_url, tailscale_ready=False):
 
 
 def versions(node_root):
-    if run([node_root + '/bin/node', '--version']).stdout.strip() != 'v24.21.0':
+    expected_node = os.environ.get('NCP_NODE_VERSION', Path(node_root).name.removeprefix('node-v').removesuffix('-linux-x64'))
+    expected_openclaw = os.environ.get('NCP_OPENCLAW_VERSION', '2026.9.6')
+    if run([node_root + '/bin/node', '--version']).stdout.strip() != 'v' + expected_node:
         raise RuntimeError('Node runtime drift')
     changed = False
-    for name, version in [('npm', '11.19.0'), ('openclaw', '2026.9.6')]:
+    npm_target = os.environ.get('NCP_NPM_VERSION') or None
+    targets = ([('npm', npm_target)] if npm_target else []) + [('openclaw', expected_openclaw)]
+    for name, version in targets:
         package = Path.home() / '.npm-global/lib/node_modules' / name / 'package.json'
         installed = json.loads(package.read_text()).get('version') if package.exists() else None
         if installed != version:
-            manifest = json.loads(Path(__file__).with_name('npm-artifacts.json').read_text())
-            artifact = next(a for a in manifest if a['name'] == name and a['version'] == version)
-            archive = Path.home() / '.cache' / (name + '-' + version + '.tgz')
-            archive.parent.mkdir(parents=True, exist_ok=True)
-            data = urllib.request.urlopen(artifact['url'], timeout=120).read()
-            if hashlib.sha256(data).hexdigest() != artifact['sha256']:
-                raise RuntimeError('npm source artifact checksum mismatch')
-            archive.write_bytes(data)
             install_env = {k: v for k, v in os.environ.items() if k not in ('OPENCLAW_GATEWAY_TOKEN', 'NCP_SUPPLIED_TOKEN')}
-            run([node_root + '/bin/npm', 'install', '--global', '--prefix', str(Path.home() / '.npm-global'), str(archive)], env=install_env)
+            manifest = json.loads(Path(__file__).with_name('npm-artifacts.json').read_text())
+            artifact = next((a for a in manifest if a['name'] == name and a['version'] == version), None)
+            if artifact:
+                archive = Path.home() / '.cache' / (name + '-' + version + '.tgz')
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                data = urllib.request.urlopen(artifact['url'], timeout=120).read()
+                if hashlib.sha256(data).hexdigest() != artifact['sha256']:
+                    raise RuntimeError('npm source artifact checksum mismatch')
+                archive.write_bytes(data)
+                package_ref = str(archive)
+            else:
+                if name == 'openclaw' and os.environ.get('NCP_OPENCLAW_URL') and os.environ.get('NCP_OPENCLAW_INTEGRITY', '').startswith('sha512-'):
+                    archive = Path.home() / '.cache' / (name + '-' + version + '.tgz')
+                    archive.parent.mkdir(parents=True, exist_ok=True)
+                    data = urllib.request.urlopen(os.environ['NCP_OPENCLAW_URL'], timeout=120).read()
+                    expected = base64.b64decode(os.environ['NCP_OPENCLAW_INTEGRITY'].split('-', 1)[1])
+                    if hashlib.sha512(data).digest() != expected:
+                        raise RuntimeError('OpenClaw source integrity mismatch')
+                    archive.write_bytes(data)
+                    package_ref = str(archive)
+                else:
+                    raise RuntimeError('no verified artifact metadata for requested package')
+            run([node_root + '/bin/npm', 'install', '--global', '--prefix', str(Path.home() / '.npm-global'), package_ref], env=install_env)
             changed = True
     verify_versions(node_root)
     return changed
 
 
 def verify_versions(node_root):
-    if run([node_root + '/bin/node', '--version']).stdout.strip() != 'v24.21.0':
+    expected_node = os.environ.get('NCP_NODE_VERSION', Path(node_root).name.removeprefix('node-v').removesuffix('-linux-x64'))
+    expected_openclaw = os.environ.get('NCP_OPENCLAW_VERSION', '2026.9.6')
+    if run([node_root + '/bin/node', '--version']).stdout.strip() != 'v' + expected_node:
         raise RuntimeError('Node version mismatch')
-    if run(['npm', '--version']).stdout.strip() != '11.19.0':
+    expected_npm = os.environ.get('NCP_NPM_VERSION')
+    if expected_npm and run(['npm', '--version']).stdout.strip() != expected_npm:
         raise RuntimeError('npm version mismatch')
-    if not re.search(r'\b2026\.9\.6\b', run(['openclaw', '--version']).stdout):
+    if not re.search(r'\b' + re.escape(expected_openclaw) + r'\b', run(['openclaw', '--version']).stdout):
         raise RuntimeError('OpenClaw version mismatch')
 
 
@@ -205,7 +227,7 @@ def verify(workspace, port, node_root, public_url, tailscale_ready=False):
 def service(port, node_root):
     unit = Path.home() / '.config/systemd/user/openclaw-gateway.service'
     stamp = Path.home() / '.config/openclaw/service-spec.json'
-    spec = json.dumps({'node': node_root, 'openclaw': '2026.9.6', 'port': int(port)}, sort_keys=True)
+    spec = json.dumps({'node': node_root, 'openclaw': os.environ.get('NCP_OPENCLAW_VERSION', '2026.9.6'), 'port': int(port)}, sort_keys=True)
     changed = False
     run(['systemctl', '--user', 'daemon-reload'])
     expected = spec + ('\n' + hashlib.sha256(unit.read_bytes()).hexdigest() if unit.exists() else '')

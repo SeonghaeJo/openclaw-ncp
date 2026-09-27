@@ -8,6 +8,7 @@ explicit confirmation immediately before a billable/destructive operation.
 from __future__ import annotations
 import argparse, datetime as dt, getpass, json, os, secrets, shutil, subprocess, sys, tempfile
 from pathlib import Path
+from openclaw_lifecycle import choose_image, choose_spec, choose_zone, fingerprint_for_key_line, fingerprint_lines, is_ipv4_cidr, ubuntu_release_from_image
 
 ROOT = Path(__file__).resolve().parent
 TF = ROOT / "terraform"
@@ -39,22 +40,55 @@ def write_json(path, value):
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
 
-def secret_tool(args, value=None):
-    if shutil.which("secret-tool"):
-        cmd = ["secret-tool"] + args
-        p = subprocess.run(cmd, input=(value+"\n") if value is not None else None, text=True, capture_output=True)
-        if p.returncode == 0: return p.stdout.rstrip("\n")
-    die("an OS credential store is required (install secret-tool/libsecret); refusing plaintext credential fallback")
+def credential_backend():
+    if sys.platform == "darwin" and shutil.which("security"):
+        return "keychain"
+    if sys.platform.startswith("linux") and shutil.which("secret-tool"):
+        return "libsecret"
+    die("an OS credential store is required (macOS security or Linux secret-tool/libsecret); refusing plaintext fallback")
+
+def keychain_put(account, value):
+    """Use Apple's security CLI through a PTY so the password is never argv."""
+    import pty, select, time
+    master, slave = pty.openpty()
+    cmd = ["security", "add-generic-password", "-U", "-s", "openclaw-ncp", "-a", account, "-l", "OpenClaw NCP credential", "-w"]
+    process = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    sent = 0; started = time.monotonic()
+    try:
+        while process.poll() is None:
+            if time.monotonic() - started > 30: process.kill(); die("macOS Keychain prompt timed out")
+            ready, _, _ = select.select([master], [], [], 0.25)
+            if ready:
+                try: output = os.read(master, 4096).lower()
+                except OSError: output = b""
+                prompts = min(2 - sent, output.count(b"password"))
+                for _ in range(prompts):
+                    os.write(master, (value + "\n").encode())
+                    sent += 1
+        if process.returncode != 0: die("macOS Keychain write failed; refusing plaintext fallback")
+    finally:
+        os.close(master)
 
 def secret_get(account):
-    if not shutil.which("secret-tool"): die("an OS credential store is required (install secret-tool/libsecret); refusing plaintext credential fallback")
-    p = subprocess.run(["secret-tool", "lookup", "service", "openclaw-ncp", "account", account], text=True, capture_output=True)
+    backend = credential_backend()
+    if backend == "keychain":
+        p = subprocess.run(["security", "find-generic-password", "-s", "openclaw-ncp", "-a", account, "-w"], text=True, capture_output=True)
+    else:
+        p = subprocess.run(["secret-tool", "lookup", "service", "openclaw-ncp", "account", account], text=True, capture_output=True)
     if p.returncode == 0: return p.stdout.rstrip("\n")
-    if p.returncode == 1: return ""
+    if p.returncode == 44 or p.returncode == 1: return ""
     die("OS credential store lookup failed")
 
 def secret_put(account, value):
-    secret_tool(["store", "--label", "OpenClaw NCP credential", "service", "openclaw-ncp", "account", account], value)
+    backend = credential_backend()
+    if backend == "keychain":
+        keychain_put(account, value)
+        return
+    else:
+        cmd = ["secret-tool", "store", "--label", "OpenClaw NCP credential", "service", "openclaw-ncp", "account", account]
+    p = subprocess.run(cmd, input=value + "\n", text=True, capture_output=True)
+    if p.returncode: die("OS credential store write failed; refusing plaintext fallback")
 
 def credentials(profile):
     account = profile.get("name", "default")
@@ -103,7 +137,7 @@ def confirm(word, prompt):
     print(prompt); return input("Type " + word + " to continue: ").strip() == word
 
 def discover(profile, creds):
-    print("Discovering existing GEN subnets read-only; no resource mutation will occur.")
+    print("Discovering existing GEN subnets, zones, images and specs read-only; no resource mutation will occur.")
     terraform = terraform_bin()
     run([terraform, "init", "-backend=false", "-input=false"], cwd=DISCOVERY, env=creds, quiet=True)
     run([terraform, "apply", "-refresh-only", "-auto-approve", "-input=false"], cwd=DISCOVERY, env=creds, quiet=True)
@@ -111,29 +145,73 @@ def discover(profile, creds):
     try: data = json.loads(values.stdout)
     except Exception: die("NCP discovery returned no safe candidate list")
     candidates = data.get("subnets", {}).get("value", [])
+    return data, candidates
+
+def choose_vm(profile, data, args):
+    images = data.get("images", {}).get("value", [])
+    specs = data.get("specs", {}).get("value", [])
+    zones = data.get("zones", {}).get("value", [])
+    requested_release = args.release or profile.get("ubuntu_release")
+    requested_image = args.image_number or profile.get("server_image_number")
+    if requested_image:
+        image = next((i for i in images if str(i.get("number")) == str(requested_image)), None)
+        if not image: die("requested image number was not returned by the current NCP read-only discovery")
+        # Explicit image numbers are still checked for KVM/Ubuntu/x86_64 and
+        # release metadata is recorded when NCP exposes it in the name.
+        image = {**image, "server_image_number": str(requested_image)}
+        if str(image.get("hypervisor", "")).upper() != "KVM" or str(image.get("os", "")).upper() != "UBUNTU" or "x86_64" not in str(image.get("architecture", "")).lower():
+            die("requested image is not a compatible Ubuntu x86_64/KVM image")
+        inferred_release = ubuntu_release_from_image({"name": image.get("name"), "description": image.get("description")})
+        if requested_release and inferred_release and requested_release != inferred_release:
+            die("--release does not match the selected image metadata")
+        release = requested_release or inferred_release
+        if not release: die("could not infer the Ubuntu LTS release for this image; supply --release explicitly")
+    else:
+        normalized = [{"server_image_number": i.get("number"), "name": i.get("name"), "description": i.get("description"), "hypervisor_type": i.get("hypervisor"), "os_type": i.get("os"), "cpu_architecture_type": i.get("architecture")} for i in images]
+        try: image = choose_image(normalized, requested_release)
+        except ValueError as exc: die(str(exc))
+        release = image["ubuntu_release"]
+    normalized_specs = [{"server_spec_code": s.get("code"), "hypervisor_type": s.get("hypervisor"), "cpu_architecture_type": s.get("architecture"), "memory_size": s.get("memory"), "cpu_count": s.get("cpu"), "description": s.get("description")} for s in specs]
+    requested_spec = profile.get("server_spec_code")
+    if requested_spec:
+        spec = next((s for s in normalized_specs if s.get("server_spec_code") == requested_spec), None)
+        if not spec: die("recorded server spec is not returned by the current NCP discovery")
+    else:
+        try: spec = choose_spec(normalized_specs)
+        except ValueError as exc: die(str(exc))
+    zone_override = args.zone or profile.get("zone")
+    if not zone_override:
+        print("Available zones returned by NCP:")
+        for z in sorted(zones, key=lambda x: x.get("code", "")): print(f"  {z.get('code')}: {z.get('name')} {z.get('description','')}")
+        zone_override = input("Select a zone code (required; no zone is guessed): ").strip()
+    try: zone = choose_zone(zones, zone_override)
+    except ValueError as exc: die(str(exc))
+    profile.update({"ubuntu_release": release, "server_image_number": str(image.get("server_image_number") or image.get("number")), "server_spec_code": spec.get("server_spec_code"), "zone": zone.get("zone_code"), "image_metadata": image, "spec_metadata": spec, "zone_metadata": zone})
+    return zone.get("zone_code")
+
+def discover_network(profile, data, zone_code):
+    candidates = data.get("subnets", {}).get("value", [])
+    candidates = [c for c in candidates if c.get("zone") == zone_code and c.get("usage") == "GEN" and c.get("type") == "PUBLIC"]
     ssh_cidr = input("Verified operator SSH source IPv4 /32 (required for bootstrap): ").strip()
-    import ipaddress
-    try:
-        if ipaddress.ip_network(ssh_cidr, strict=False).prefixlen != 32: raise ValueError
-    except ValueError: die("bootstrap SSH source must be a verified IPv4 /32; private access paths need a separate profile")
+    if not is_ipv4_cidr(ssh_cidr): die("bootstrap SSH source must be a verified IPv4 /32; private access paths need a separate profile")
     if not candidates:
-        print("No reusable GEN subnet was returned; a dedicated PUBLIC network with only this /32 SSH source will be proposed.")
-        return {"mode":"create", "vpc_mode":"create", "subnet_mode":"create", "vpc_cidr":"10.42.0.0/16", "subnet_cidr":"10.42.1.0/24", "zone":"KR-2", "subnet_type":"PUBLIC", "ssh_source_cidrs":[ssh_cidr], "ownership":"created"}
-    print("Reusable candidates (none is selected automatically):")
-    for i, c in enumerate(candidates): print(f"  [{i}] subnet={c['id']} vpc={c['vpc_id']} {c['name']} {c['cidr']} {c['zone']} {c['type']}")
+        print(f"No compatible reusable PUBLIC GEN subnet exists in zone {zone_code}; a dedicated network will be proposed.")
+        return {"mode":"create", "vpc_mode":"create", "subnet_mode":"create", "vpc_cidr":"10.42.0.0/16", "subnet_cidr":"10.42.1.0/24", "zone":zone_code, "subnet_type":"PUBLIC", "ssh_source_cidrs":[ssh_cidr], "ownership":"created"}
+    print(f"Reusable candidates compatible with Ubuntu {profile['ubuntu_release']} / KVM / x86_64 / {profile['server_spec_code']} in zone {zone_code} (none is selected automatically):")
+    for i, c in enumerate(candidates): print(f"  [{i}] subnet={c['id']} vpc={c['vpc_id']} {c['name']} {c['cidr']} zone={c['zone']} type={c['type']}")
     raw = input("Select a candidate number, or press Enter to create a dedicated network: ").strip()
-    if raw == "": return {"mode":"create", "vpc_mode":"create", "subnet_mode":"create", "vpc_cidr":"10.42.0.0/16", "subnet_cidr":"10.42.1.0/24", "zone":"KR-2", "subnet_type":"PUBLIC", "ssh_source_cidrs":[ssh_cidr], "ownership":"created"}
+    if raw == "": return {"mode":"create", "vpc_mode":"create", "subnet_mode":"create", "vpc_cidr":"10.42.0.0/16", "subnet_cidr":"10.42.1.0/24", "zone":zone_code, "subnet_type":"PUBLIC", "ssh_source_cidrs":[ssh_cidr], "ownership":"created"}
     try: c = candidates[int(raw)]
     except (ValueError, IndexError): die("invalid network selection")
     if c["type"] != "PUBLIC": die("selected subnet is private; configure an approved private SSH path instead of guessing a route")
     if not confirm("REUSE", f"Use subnet {c['id']} in VPC {c['vpc_id']}? Existing network resources will never be destroyed by down."): die("network selection cancelled")
-    return {"mode":"reuse", "vpc_mode":"reuse", "subnet_mode":"reuse", "vpc_no":c["vpc_id"], "subnet_no":c["id"], "ssh_source_cidrs":[ssh_cidr], "ownership":"reused"}
+    return {"mode":"reuse", "vpc_mode":"reuse", "subnet_mode":"reuse", "vpc_no":c["vpc_id"], "subnet_no":c["id"], "zone":c["zone"], "ssh_source_cidrs":[ssh_cidr], "ownership":"reused"}
 
 def tfvars(profile, destroying=False):
     n = profile["network"]
     values = {"name": profile.get("name", "openclaw"), "login_key_name": profile["login_key_name"], "hypervisor":"KVM", "allocate_public_ip":True,
               "vpc_mode":n["vpc_mode"], "subnet_mode":n["subnet_mode"], "subnet_type":n.get("subnet_type","PUBLIC"), "ssh_source_cidrs":n.get("ssh_source_cidrs",[]),
-              "server_image_number": profile.get("server_image_number"), "server_spec_code": profile.get("server_spec_code"), "ubuntu_release": profile.get("ubuntu_release","24.04")}
+              "server_image_number": profile.get("server_image_number"), "server_spec_code": profile.get("server_spec_code"), "ubuntu_release": profile.get("ubuntu_release")}
     values.update({k:n[k] for k in ("vpc_no","subnet_no","vpc_cidr","subnet_cidr","zone") if k in n})
     return "\n".join(f'{k} = {json.dumps(v)}' for k,v in values.items() if v is not None) + "\n"
 
@@ -145,16 +223,62 @@ def inventory(profile, host):
     fd, tmp = tempfile.mkstemp(prefix="inventory-", dir=config); os.close(fd); Path(tmp).write_text(content); os.chmod(tmp,0o600); os.replace(tmp,p)
     return p
 
+def establish_host_trust(profile, host):
+    """Verify a new host key interactively before any Ansible/SSH action."""
+    kh = Path(profile["known_hosts_file"]).expanduser()
+    kh.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if kh.exists() and kh.stat().st_mode & 0o077: die("known_hosts file must be private (mode 0600 or stricter)")
+    scan = subprocess.run(["ssh-keyscan", "-T", "10", "-4", host], text=True, capture_output=True)
+    if scan.returncode or not scan.stdout.strip(): die("could not obtain an SSH host key; Ansible was not started")
+    fingerprints = fingerprint_lines(scan.stdout)
+    if not fingerprints: die("could not derive an SSH host fingerprint; Ansible was not started")
+    print("NCP does not provide a trusted SSH fingerprint through this workflow.")
+    print("Verify this fingerprint out-of-band using the NCP console or another trusted channel:")
+    for value in fingerprints: print("  " + value)
+    existing = []
+    if kh.exists():
+        found = subprocess.run(["ssh-keygen", "-F", host, "-f", str(kh)], text=True, capture_output=True)
+        existing = fingerprint_lines("\n".join(line.split()[:3] for line in found.stdout.splitlines() if line and not line.startswith("#"))) if found.returncode == 0 else []
+    expected = profile.get("host_key_fingerprint")
+    key_changed = bool(expected and expected not in fingerprints)
+    if key_changed:
+        print(f"Recorded host fingerprint {expected} is not present on the new VM.")
+        if input("Type REPLACE-HOST-KEY after independently verifying the new VM: ").strip() != "REPLACE-HOST-KEY": die("host key changed without explicit approval; Ansible was not started")
+    typed = input("Type the verified SHA256 fingerprint exactly to continue: ").strip()
+    if typed not in fingerprints: die("fingerprint was not verified; Ansible was not started")
+    selected_lines = [line for line in scan.stdout.splitlines() if line and not line.startswith("#") and fingerprint_for_key_line(line) == typed]
+    if not selected_lines: die("verified fingerprint did not map to a scanned host key; Ansible was not started")
+    if existing and typed not in existing and not key_changed:
+        print("The existing known_hosts entry differs from the new VM key.")
+        if input("Type REPLACE-HOST-KEY to replace it after the fingerprint check: ").strip() != "REPLACE-HOST-KEY": die("stale host key retained; Ansible was not started")
+        tmp = kh.with_name(kh.name + ".new")
+        shutil.copy2(kh, tmp); os.chmod(tmp, 0o600)
+        subprocess.run(["ssh-keygen", "-R", host, "-f", str(tmp)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with tmp.open("a") as f: f.write("\n".join(selected_lines) + "\n")
+        os.replace(tmp, kh)
+    elif not existing:
+        with kh.open("a") as f: f.write("\n".join(selected_lines) + "\n")
+        os.chmod(kh, 0o600)
+    profile["host_key_fingerprint"] = typed
+
 def up(args):
     profile, pp = read_profile(); profile.setdefault("name", args.name)
     creds = credentials(profile); gateway_token(profile)
     runtime = resolve_runtime(profile)
-    if "network" not in profile: profile["network"] = discover(profile, creds)
+    discovery_data = None
+    if "server_image_number" not in profile or args.image_number or args.release or "server_spec_code" not in profile or "zone" not in profile or args.zone:
+        discovery_data, _ = discover(profile, creds)
+        choose_vm(profile, discovery_data, args)
+    if "network" not in profile:
+        if discovery_data is None: discovery_data, _ = discover(profile, creds)
+        profile["network"] = discover_network(profile, discovery_data, profile["zone"])
+    if profile["network"].get("zone") and profile["network"]["zone"] != profile["zone"]:
+        die("selected zone conflicts with the saved network zone; reselect the network explicitly instead of silently changing placement")
     if "login_key_name" not in profile: profile["login_key_name"] = input("NCP login key name: ").strip()
     if "ssh_user" not in profile: profile["ssh_user"] = input("Bootstrap SSH username: ").strip()
     if "ssh_private_key" not in profile: profile["ssh_private_key"] = input("Bootstrap SSH private-key path: ").strip()
-    if "known_hosts_file" not in profile: profile["known_hosts_file"] = input("Pre-trusted SSH known_hosts file path: ").strip()
-    if not Path(profile["known_hosts_file"]).is_file(): die("pre-trusted known_hosts file is required; verify the NCP host fingerprint out of band first")
+    if "known_hosts_file" not in profile: profile["known_hosts_file"] = input("Protected SSH known_hosts file path: ").strip()
+    if not profile["known_hosts_file"]: die("a protected known_hosts path is required")
     write_json(pp, profile)
     config, _ = dirs(); tf = config / "terraform.tfvars"; plan = config / "reviewed.tfplan"; tf.write_text(tfvars(profile)); os.chmod(tf,0o600)
     env = {**creds}; terraform = terraform_bin()
@@ -166,7 +290,9 @@ def up(args):
     run([terraform,"apply","-input=false",str(plan)], cwd=TF, env=env)
     ip = run([terraform,"output","-raw","public_ip"], cwd=TF, env=env).stdout.strip()
     if not ip: die("no public IP was returned; configure an approved private SSH path before Ansible")
-    inv = inventory(profile, ip); profile["host"] = ip; profile["lifecycle"] = {"state":"provisioned","updated_at":now()}; write_json(pp,profile)
+    profile["host"] = ip; profile["lifecycle"] = {"state":"awaiting_host_trust","updated_at":now()}; write_json(pp,profile)
+    establish_host_trust(profile, ip); write_json(pp, profile)
+    inv = inventory(profile, ip); profile["lifecycle"] = {"state":"provisioned","updated_at":now()}; write_json(pp,profile)
     ansible = os.environ.get("ANSIBLE_PLAYBOOK","ansible-playbook")
     run([ansible,"-i",str(inv),str(ROOT/"ansible/playbook.yml"),"-e","openclaw_new_host_ack=true", "-e", "openclaw_version="+runtime["openclaw_version"], "-e", "openclaw_artifact_url="+runtime.get("openclaw_tarball",""), "-e", "openclaw_artifact_integrity="+runtime.get("openclaw_integrity",""), "-e", "node_version="+runtime["node_version"], "-e", "node_sha256="+runtime["node_sha256"]], env={**creds,"OPENCLAW_GATEWAY_TOKEN":gateway_token(profile)}, cwd=ROOT)
     restore(profile)
@@ -228,7 +354,7 @@ def upgrade(args):
 
 def main():
     ap=argparse.ArgumentParser(); sp=ap.add_subparsers(dest="command",required=True)
-    u=sp.add_parser("up"); u.add_argument("--name",default="openclaw"); u.add_argument("--approve",action="store_true"); u.set_defaults(fn=up)
+    u=sp.add_parser("up"); u.add_argument("--name",default="openclaw"); u.add_argument("--release"); u.add_argument("--image-number"); u.add_argument("--zone"); u.add_argument("--approve",action="store_true"); u.set_defaults(fn=up)
     s=sp.add_parser("status"); s.set_defaults(fn=status)
     d=sp.add_parser("down"); d.add_argument("--approve",action="store_true"); d.set_defaults(fn=down)
     g=sp.add_parser("upgrade"); g.add_argument("--to",required=True); g.add_argument("--approve",action="store_true"); g.set_defaults(fn=upgrade)

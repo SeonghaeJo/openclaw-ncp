@@ -21,12 +21,15 @@ Use the root command rather than entering Terraform/Ansible details on every run
 The command stores only non-secret installation metadata in
 `~/.config/openclaw-ncp/installation.json`, and stores NCP credentials plus the
 cryptographically random Gateway token in the OS credential store
-(`secret-tool`/libsecret on Linux). It refuses a plaintext fallback. The token is
+(`security` Keychain on macOS or `secret-tool`/libsecret on Linux). It refuses a plaintext fallback. The token is
 reused after VM recreation and is not rotated by `up`; rotation is a separate
 explicit workflow.
 
-When no profile exists, `up` performs read-only NCP discovery, displays reusable
-GEN subnet candidates, and requires `REUSE` before adopting one. Pressing Enter
+When no profile exists, `up` performs read-only NCP discovery of zones, images,
+specs and reusable GEN subnets, displays only zone-compatible PUBLIC GEN
+subnets for the selected Ubuntu/KVM/x86_64 VM conditions, and requires `REUSE` before adopting
+one. A zone must be selected explicitly unless the profile or `--zone` supplies
+one. Pressing Enter
 proposes a dedicated **public** VPC/subnet with only the verified operator
 `/32` SSH ingress needed for bootstrap; the current lifecycle path requires a
 public IP to reach the host. Private-subnet deployment requires a separately
@@ -54,9 +57,12 @@ not be copied blindly across a new VM identity; if needed, pair once with:
 
 The short-lived code, Tailscale ACL/device approval, and iOS approval remain human
 gates. Gateway access remains loopback-only on port 18789 behind Tailscale Serve.
-Before the first plan, provide a pre-trusted `known_hosts` file built from an
-out-of-band NCP console/fingerprint check; the wrapper passes that file to both
-Ansible and backup/restore SSH. A public bootstrap subnet is used only with the
+After each VM creation, the wrapper obtains candidate SSH keys with
+`ssh-keyscan`, displays SHA256 fingerprints, and pauses for an out-of-band NCP
+console/fingerprint check. It updates the protected `known_hosts` file only
+after the operator types the verified fingerprint; a changed key additionally
+requires `REPLACE-HOST-KEY`. Strict checking is then passed to both Ansible and
+backup/restore SSH. A public bootstrap subnet is used only with the
 operator's verified `/32` SSH source; port 18789 is never opened.
 First install resolves a current supported OpenClaw stable/Node LTS pair and
 records it; recreation reuses the recorded pair when available. `upgrade` is the
@@ -64,7 +70,10 @@ separate reviewed path for changing that release.
 
 ## Reproduction scope
 
-Ubuntu 24.04 x86_64, Node **24.21.0**, npm **11.19.0**, OpenClaw **2026.9.6**,
+The lifecycle selects the newest currently available Ubuntu LTS x86_64/KVM
+image from live NCP metadata (or accepts `./openclaw up --release 24.04`,
+`--image-number`, and `--zone` overrides). The selected release, image number,
+spec and zone are recorded in installation metadata. Node **24.21.0**, npm **11.19.0**, OpenClaw **2026.9.6**,
 user-owned systemd Gateway, linger, local/loopback/token authentication on 18789.
 Defaults: user dev; shell/project directory /home/dev/workspace; independent agent
 workspace /home/dev/.openclaw/workspace. Home and workspace values are configurable.
@@ -143,7 +152,7 @@ JSON only for success/model identity and redact any content before sharing it.
 
 ## Prerequisites
 
-* Authorized **new** Ubuntu 24.04 x86_64 VM, sufficient memory/storage for npm native
+* Authorized **new** Ubuntu LTS x86_64 VM, sufficient memory/storage for npm native
   dependencies; outbound HTTPS/DNS to Node, npm, Ubuntu and package build sources.
 * Controller: Python 3.12, Ansible-core 2.19.3, Terraform 1.9.8 (validated versions).
   Repository-local validation installations live in ignored .venv/.tools.
@@ -151,7 +160,9 @@ JSON only for success/model identity and redact any content before sharing it.
   asks before reuse; otherwise it proposes a dedicated network. See [network
   modes, security and state migration](docs/networking.md). Compatible
   zone/image/spec, existing login key and approved SSH/egress paths are required.
-  Fresh defaults are private with no SSH ingress; no NAT is created implicitly.
+  Direct Terraform examples default to private with no SSH ingress; the lifecycle
+  bootstrap path explicitly creates or reuses a PUBLIC subnet with only the
+  verified operator /32. No NAT is created implicitly.
   Review ACG and NACL rules and routes. Never open 18789 publicly.
 * Verify the SSH host fingerprint through trusted NCP console/out-of-band information
   before adding it to known_hosts. ssh-keyscan alone does not establish trust.
@@ -176,7 +187,8 @@ the real hostname or any auth material.
 
 Set NCP credentials using your approved local secret mechanism, not committed tfvars.
 Copy terraform/terraform.tfvars.example to terraform/terraform.tfvars and select
-Ubuntu 24.04 x86_64 image/spec explicitly. Provider 4.0.7 accepts image_number/spec
+an Ubuntu x86_64 image/spec explicitly when using Terraform directly. The root
+wrapper performs live image/release selection. Provider 4.0.7 accepts image_number/spec
 for KVM/XEN/RHV; legacy product-code pairs support only XEN/RHV. Never mix pairs.
 The hypervisor label is an input guard, not live validation of the account image.
 A primary NIC attaches supplied or dedicated restricted ACGs. See the three example

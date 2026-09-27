@@ -34,11 +34,11 @@ variable "server_image_number" {
   default = null
 }
 variable "ubuntu_release" {
-  description = "Ubuntu LTS release selector used when server_image_number is omitted."
+  description = "Ubuntu LTS release selected from live NCP metadata; null requires an explicit image number."
   type        = string
-  default     = "24.04"
+  default     = null
   validation {
-    condition     = can(regex("^[0-9]{2}\\.[04]4$", var.ubuntu_release))
+    condition     = var.ubuntu_release == null || can(regex("^[0-9]{2}\\.04$", var.ubuntu_release))
     error_message = "ubuntu_release must be an Ubuntu LTS release such as 22.04 or 24.04."
   }
 }

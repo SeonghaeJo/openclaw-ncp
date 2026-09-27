@@ -26,6 +26,8 @@ class RoleTests(unittest.TestCase):
         text = (ROOT / 'scripts/pair-app.sh').read_text()
         self.assertIn("openclaw qr --setup-code-only", text)
         self.assertIn('ssh -tt -o StrictHostKeyChecking=yes -o BatchMode=yes -- "$target"', text)
+        self.assertIn('openclaw_device_pair_public_url', text)
+        self.assertIn('openclaw_user', text)
         self.assertIn('. "$HOME/.config/openclaw/gateway.env"', text)
         self.assertIn('export PATH=', text)
         self.assertNotIn('OPENCLAW_GATEWAY_TOKEN', text)

@@ -22,8 +22,9 @@ or LAN interfaces.
 3. Set the uncommitted host-specific `openclaw_device_pair_public_url` to the
    HTTPS MagicDNS URL and set `openclaw_tailscale_ready: true`.
 4. Rerun the playbook and `./scripts/verify.sh inventory.yml`.
-5. From the operator PC, run `./scripts/pair-app.sh dev@HOST.TAILNET.example`.
-   Scan the displayed setup code in the official OpenClaw app, approve the pending
+5. From the operator PC, run `./scripts/pair-app.sh`. It reads the private inventory's
+   `openclaw_device_pair_public_url` and `openclaw_user`; alternatively pass
+   `dev@TAILNET_MAGICDNS_NAME` explicitly. Scan the displayed setup code in the official OpenClaw app, approve the pending
    device, and confirm WSS from the real app. The script loads the Gateway token
    only from the protected remote env file for the CLI; it is not placed in SSH
    arguments or intentionally printed. The PC must already have the trusted host

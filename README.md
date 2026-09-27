@@ -249,8 +249,10 @@ freshly verified fact and is not reproduced as a target.
 ### App integration checklist (after baseline acceptance)
 
 * Configure models through installed `openclaw configure`; complete account login locally.
-* From the PC, run `./scripts/pair-app.sh dev@HOST.TAILNET.example` once the second
-  Ansible phase is complete. Scan the displayed short-lived setup code in the official
+* From the PC, run `./scripts/pair-app.sh` once the second Ansible phase is complete.
+  The script reads the private inventory's `openclaw_device_pair_public_url` and
+  `openclaw_user`, so the host does not need to be typed at runtime. Scan the displayed
+  short-lived setup code in the official
   OpenClaw app and approve the pending device.
 * Review/install compatible Codex/plugin versions only under separate approval; authenticate
   the new host yourself. Never copy origin credential databases or request broader scopes.
@@ -261,10 +263,18 @@ freshly verified fact and is not reproduced as a target.
 The one-line PC entry point is:
 
 ```bash
-./scripts/pair-app.sh dev@HOST.TAILNET.example
+./scripts/pair-app.sh
 ```
 
-After pairing, the app uses the Tailscale Serve HTTPS URL and the Gateway remains
+For a one-off connection without a private inventory, pass the target explicitly:
+
+```bash
+./scripts/pair-app.sh dev@TAILNET_MAGICDNS_NAME
+```
+
+The Tailscale hostname cannot be safely guessed before the device joins the tailnet;
+it is environment-specific. Store it once in uncommitted `ansible/inventory.yml`, then
+the no-argument command resolves it automatically. After pairing, the app uses the Tailscale Serve HTTPS URL and the Gateway remains
 loopback-only. No chat-channel plugin configuration is required.
 
 ## Local validation and evidence

@@ -16,7 +16,7 @@ NOTICE
 # The remote command is constant; no token or secret is passed in argv. The
 # protected env file is sourced only inside the remote login shell because QR
 # generation may need the Gateway SecretRef in the installed CLI version.
-exec ssh -tt -- "$target" 'exec bash -lc '\''
+exec ssh -tt -o StrictHostKeyChecking=yes -o BatchMode=yes -- "$target" 'exec bash -lc '\''
   set -a
   . "$HOME/.config/openclaw/gateway.env"
   set +a

@@ -25,7 +25,7 @@ class RoleTests(unittest.TestCase):
     def test_app_pair_script_is_secret_free_and_static_remote_command(self):
         text = (ROOT / 'scripts/pair-app.sh').read_text()
         self.assertIn("openclaw qr --setup-code-only", text)
-        self.assertIn("exec ssh -tt -- \"$target\"", text)
+        self.assertIn('ssh -tt -o StrictHostKeyChecking=yes -o BatchMode=yes -- "$target"', text)
         self.assertIn('. "$HOME/.config/openclaw/gateway.env"', text)
         self.assertIn('export PATH=', text)
         self.assertNotIn('OPENCLAW_GATEWAY_TOKEN', text)

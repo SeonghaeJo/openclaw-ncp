@@ -24,8 +24,10 @@ or LAN interfaces.
 4. Rerun the playbook and `./scripts/verify.sh inventory.yml`.
 5. From the operator PC, run `./scripts/pair-app.sh dev@HOST.TAILNET.example`.
    Scan the displayed setup code in the official OpenClaw app, approve the pending
-   device, and confirm WSS from the real app. The script never receives or prints
-   the Gateway token.
+   device, and confirm WSS from the real app. The script loads the Gateway token
+   only from the protected remote env file for the CLI; it is not placed in SSH
+   arguments or intentionally printed. The PC must already have the trusted host
+   key in `known_hosts` because the script enforces strict host-key checking.
 
 The role does not automate tailnet login, ACL/tag approval, QR delivery, or
 device approval. Those actions require an authorized human and may produce

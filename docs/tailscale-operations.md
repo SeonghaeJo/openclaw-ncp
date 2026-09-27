@@ -22,8 +22,10 @@ or LAN interfaces.
 3. Set the uncommitted host-specific `openclaw_device_pair_public_url` to the
    HTTPS MagicDNS URL and set `openclaw_tailscale_ready: true`.
 4. Rerun the playbook and `./scripts/verify.sh inventory.yml`.
-5. Run `openclaw qr --setup-code-only`, pair the iOS app, approve the pending
-   OpenClaw device, and confirm WSS from the real app.
+5. From the operator PC, run `./scripts/pair-app.sh dev@HOST.TAILNET.example`.
+   Scan the displayed setup code in the official OpenClaw app, approve the pending
+   device, and confirm WSS from the real app. The script never receives or prints
+   the Gateway token.
 
 The role does not automate tailnet login, ACL/tag approval, QR delivery, or
 device approval. Those actions require an authorized human and may produce

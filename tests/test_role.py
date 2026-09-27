@@ -21,3 +21,12 @@ class RoleTests(unittest.TestCase):
         text = (ROOT / 'ansible/ansible.cfg').read_text()
         self.assertIn('host_key_checking = True', text)
         self.assertIn('StrictHostKeyChecking=yes', text)
+
+    def test_app_pair_script_is_secret_free_and_static_remote_command(self):
+        text = (ROOT / 'scripts/pair-app.sh').read_text()
+        self.assertIn("openclaw qr --setup-code-only", text)
+        self.assertIn("exec ssh -tt -- \"$target\"", text)
+        self.assertIn('. "$HOME/.config/openclaw/gateway.env"', text)
+        self.assertIn('export PATH=', text)
+        self.assertNotIn('OPENCLAW_GATEWAY_TOKEN', text)
+        self.assertNotIn('eval ', text)

@@ -1,6 +1,6 @@
 # Review evidence — 2026-09-25 (deployment approval pending)
 
-Repository: /home/dev/workspace/openclaw-ncp-v2. No prior Git metadata, no AGENTS.md
+Repository: /home/dev/workspace/openclaw-ncp. No prior Git metadata, no AGENTS.md
 in repository or checked ancestor locations. Supplied baseline preserved as bc51695.
 Git identity was unset; commits use per-command OpenClaw Automation
 <automation@openclaw.invalid>, without changing global/local identity configuration.
@@ -57,7 +57,8 @@ mock-only validation. Terraform validate caught an empty NIC name, fixed before 
 3. Confirm image/spec/subnet/zone/ACG/NACL/account prerequisites and SSH fingerprint.
 4. Confirm actual fresh npm/native dependency install with current upstream registry;
    it was NOT executed on the origin host or in a fresh VM.
-5. Separately approve/configure model/Discord/Codex account auth and minimal scopes.
+5. Separately approve/configure model/Codex account auth and minimal scopes; pair the
+   official OpenClaw app through the documented Tailscale setup-code flow.
 
 Do not call this production-ready or exact disk reproduction. Origin service/runtime
 configuration was never changed/restarted; no deployment playbook ran against it.

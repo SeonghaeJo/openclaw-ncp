@@ -1,4 +1,4 @@
-# OpenClaw on NCP — reviewed v2 draft
+# OpenClaw on NCP — reviewed baseline
 
 A **new-host reproduction baseline**, not an upgrader for the running origin host.
 Human approval is required for deployment/resource creation. No VM deployment or
@@ -242,20 +242,30 @@ token auth with string token; default agent workspace /home/dev/.openclaw/worksp
 No secret values copied. Reproduction uses a dedicated /opt Node archive rather than
 the origin package manager layout; service uid is resolved, not forced to 1001;
 token is a newly supplied env SecretRef rather than the origin plaintext string.
-No operator groups/sudo grants, SSH keys, models, Discord/Codex credentials,
+No operator groups/sudo grants, SSH keys, models, Codex credentials,
 plugins or agent-specific workspaces are cloned. Prior Codex version drift is not a
 freshly verified fact and is not reproduced as a target.
 
-### Manual integration checklist (after baseline acceptance)
+### App integration checklist (after baseline acceptance)
 
-* Configure models through installed openclaw configure; complete account login locally.
-* Configure Discord with openclaw channels add discord / configure, using masked local
-  prompts. Check installed command help first. Choose minimal channel allowlists and
-  explicit owner/operator rules; never infer owner authority from channel membership.
-* Review/install compatible Codex/plugin version only under separate approval; authenticate
+* Configure models through installed `openclaw configure`; complete account login locally.
+* From the PC, run `./scripts/pair-app.sh dev@HOST.TAILNET.example` once the second
+  Ansible phase is complete. Scan the displayed short-lived setup code in the official
+  OpenClaw app and approve the pending device.
+* Review/install compatible Codex/plugin versions only under separate approval; authenticate
   the new host yourself. Never copy origin credential databases or request broader scopes.
 * Review sessions/agents/bindings and intended workspace permissions; configure explicitly.
-* Restart only the new Gateway when approved; test channels and model responses separately.
+* Send a harmless read-only test message from the app, then request a small code change
+  in the approved `/home/dev/workspace` project and inspect the diff before accepting it.
+
+The one-line PC entry point is:
+
+```bash
+./scripts/pair-app.sh dev@HOST.TAILNET.example
+```
+
+After pairing, the app uses the Tailscale Serve HTTPS URL and the Gateway remains
+loopback-only. No chat-channel plugin configuration is required.
 
 ## Local validation and evidence
 
